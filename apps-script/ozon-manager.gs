@@ -448,6 +448,7 @@ function syncOrders60_() {
 
 /* ---------- Закуп: MAX(прайс поставщика; себестоимость 1С на сегодня) ----------
  * Заменяет формулы IMPORTRANGE в колонке «Закупочная цена». Источники — лист «Источники закупа».
+ * Код ищется только в прайсе своего источника; источник «1С» — только себестоимость из 1С.
  */
 function importCosts_() {
   const colIdx = L => L.toUpperCase().split('').reduce((a, ch) => a * 26 + ch.charCodeAt(0) - 64, 0) - 1;
@@ -528,17 +529,15 @@ function importCosts_() {
     else if (data.length) log_('Закуп', 'WARN', 'В таблице 1С не найдена колонка с датой');
   }
 
-  const m = readMain_(), cost = {}, rrc = {}, miss = [], elsewhere = [];
+  const m = readMain_(), cost = {}, rrc = {}, miss = [], notInPrice = [];
   m.rows.forEach(r => {
     const src = String(r['Источник закупа'] || '').trim();
     if (src.toLowerCase() === 'вручную') return;
     const code = key_(r['Код в прайсе']);
-    let s = sources[src] && sources[src][code];
-    let foundIn = src;
-    if (!s && code) {                                  // кода нет в своём прайсе — смотрим остальные
-      const other = Object.keys(sources).find(n => sources[n][code]);
-      if (other) { s = sources[other][code]; foundIn = other; elsewhere.push(`${r['Артикул']} → ${other}`); }
-    }
+    // цену ищем только в своём прайсе: коды у поставщиков пересекаются, в чужом прайсе под тем же кодом — другой товар.
+    // Источник «1С» — только себестоимость из 1С
+    const s = sources[src] && sources[src][code];
+    if (sources[src] && code && !s) notInPrice.push(`${r['Артикул']} (${src}, код ${code})`);
     const vals = [s && s.cost, c1[key_(r['Product ID'])]].filter(v => typeof v === 'number' && v > 0);
     cost[r._row] = vals.length ? Math.max(...vals) : '';
     if (s && s.rrc !== '') rrc[r._row] = s.rrc;
@@ -546,17 +545,80 @@ function importCosts_() {
       const pid = key_(r['Product ID']);
       const why = !code ? 'нет «Кода в прайсе»'
         : !sources[src] ? `источник «${src || '—'}» не настроен`
-        : 'кода нет ни в одном прайсе';
+        : `кода нет в прайсе «${src}»`;
       const why1c = !id1c ? 'таблица 1С не указана' : !has1c[pid] ? 'в 1С нет строки по product_id' : 'в 1С пусто на выбранную дату';
       miss.push(`${r['Артикул']} (${why}; ${why1c})`);
     }
   });
   mainPatch_(m, 'Закуп, ₽', cost); mainPatch_(m, 'РРЦ, ₽', rrc);
   if (noAccess.length) log_('Закуп', 'WARN', 'НЕТ ДОСТУПА к таблицам (откройте ссылку и запросите доступ для своего аккаунта):\n' + noAccess.join('\n'));
-  if (elsewhere.length) log_('Закуп', 'INFO', `Найдены в другом прайсе (${elsewhere.length}): ${elsewhere.slice(0, 60).join('; ')}`);
+  if (notInPrice.length) log_('Закуп', 'WARN', `Кода нет в своём прайсе, взят только закуп из 1С (${notInPrice.length}) — проверьте «Код в прайсе» и «Источник закупа»: ${notInPrice.join(', ')}`);
   if (miss.length) log_('Закуп', 'WARN', `Нет закупа (${miss.length}): ${miss.join(', ')}`);
   return `обновлено: ${Object.keys(cost).length - miss.length}, без закупа: ${miss.length}` +
     (noAccess.length ? ` | нет доступа к ${noAccess.length} табл. — ссылки в «Логе»` : '');
+}
+
+/* ---------- Источник закупа по формулам старой таблицы (разовая операция) ----------
+ * В старом «Командном пункте» формула закупа у каждого товара ссылалась на свой прайс.
+ * По ID таблиц в формуле находим источник на листе «Источники закупа» и ставим его в «Источник закупа».
+ * Формула только с таблицей 1С → «1С». Строки «вручную» и формулы с несколькими прайсами не трогаем.
+ */
+var OLD_TABLE_ID_ = '1Rdh8-EQEt6UiPl8ta032kKbQ2JsFDHauBmPDY9SBqX0';   // старый «Командный пункт»
+function sourcesFromOldTable() { run_('Источники закупа из старой таблицы', sourcesFromOldTable_); }
+
+function sourcesFromOldTable_() {
+  let oldSh;
+  try { oldSh = SpreadsheetApp.openById(OLD_TABLE_ID_).getSheetByName('Ozon'); }
+  catch (e) { return `нет доступа к старой таблице: https://docs.google.com/spreadsheets/d/${OLD_TABLE_ID_}`; }
+  if (!oldSh) throw new Error('В старой таблице нет листа Ozon');
+  const oh = headersAt_(oldSh, 2).map(x => x.toLowerCase());
+  const find = re => oh.findIndex(x => re.test(x));
+  const iArt = find(/^артикул/), iPid = find(/^product id/), iCost = find(/закуп/), iCode = find(/^прайс/);
+  if (iArt < 0 || iPid < 0 || iCost < 0) throw new Error('В старой таблице нет колонок «Артикул», «Product ID» или «Закупочная цена»');
+  const n = oldSh.getLastRow() - 2;
+  if (n < 1) return 'старая таблица пустая';
+  const vals = oldSh.getRange(3, 1, n, oh.length).getValues();
+  const fx = oldSh.getRange(3, iCost + 1, n, 1).getFormulas();
+
+  const names = {};                                       // ID таблицы → название источника
+  readTable_(SHEETS.SOURCES).rows.forEach(s => { const id = String(s['ID таблицы']).trim(); if (id) names[id] = String(s['Источник']).trim(); });
+  const id1c = String(cfg_('COST_1C_SHEET_ID', '')).trim();
+
+  const byPid = {}, byArt = {};
+  vals.forEach((row, i) => {
+    const f = String(fx[i][0] || ''); if (!f) return;
+    const found = Array.from(new Set(Object.keys(names).filter(id => f.indexOf(id) >= 0).map(id => names[id])));
+    const d = found.length === 1 ? { src: found[0] }
+      : !found.length && id1c && f.indexOf(id1c) >= 0 ? { src: '1С' } : { several: found };
+    d.code = iCode >= 0 ? row[iCode] : '';
+    if (/^\d+$/.test(key_(row[iPid]))) byPid[key_(row[iPid])] = d;
+    if (key_(row[iArt])) byArt[key_(row[iArt])] = d;
+  });
+
+  const m = readMain_(), src = {}, code = {}, changes = [], skipped = [];
+  let same = 0;
+  m.rows.forEach(r => {
+    const d = byPid[key_(r['Product ID'])] || byArt[key_(r['Артикул'])];
+    const cur = String(r['Источник закупа'] || '').trim();
+    if (!d || cur.toLowerCase() === 'вручную') return;
+    if (!d.src) { skipped.push(`${r['Артикул']} (${d.several.join(' + ') || 'прайс не найден'})`); return; }
+    if (cur === d.src) same++;
+    else { src[r._row] = d.src; changes.push(`${r['Артикул']}: ${cur || '—'} → ${d.src}`); }
+    if (!key_(r['Код в прайсе']) && key_(d.code) && d.src !== '1С') code[r._row] = d.code;
+  });
+  const skippedNote = skipped.length ? `, не тронуты (в старой формуле несколько прайсов): ${skipped.length}` : '';
+  if (!changes.length && !Object.keys(code).length) return `менять нечего: совпадает ${same}${skippedNote}`;
+
+  const ui = SpreadsheetApp.getUi();
+  const a = ui.alert('Источники закупа из старой таблицы',
+    `Поменяется «Источник закупа» у ${changes.length} товаров, «Код в прайсе» заполнится у ${Object.keys(code).length}. ` +
+    'Список будет в «Логе». Применить?', ui.ButtonSet.YES_NO);
+  if (a !== ui.Button.YES) return 'отменено';
+  mainPatch_(m, 'Источник закупа', src);
+  mainPatch_(m, 'Код в прайсе', code);
+  log_('Источники закупа', 'INFO', `Поменяли (${changes.length}):\n${changes.join('\n')}` +
+    (skipped.length ? `\n\nНе тронуты — в старой формуле несколько прайсов, выберите вручную (${skipped.length}):\n${skipped.join('\n')}` : ''));
+  return `источник поменян у ${changes.length}, совпадал у ${same}${skippedNote}. Теперь нажмите «Обновить закуп»`;
 }
 
 function updateUsdRate_() {
@@ -1368,6 +1430,7 @@ function onOpen() {
     .addSeparator()
     .addItem('Обновить тарифы и цены Ozon', 'syncTariffs')
     .addItem('Обновить закуп', 'importCosts')
+    .addItem('Источники закупа из старой таблицы', 'sourcesFromOldTable')
     .addItem('Добавить новые товары из Ozon', 'addMissingProducts')
     .addSeparator()
     .addItem('Аудит: сверить расчёт с Ozon', 'runAudit')

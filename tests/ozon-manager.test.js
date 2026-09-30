@@ -34,6 +34,8 @@ class Sheet {
     }
     return new Range(this, a, b, c || 1, d || 1);
   }
+  getName() { return this.name || ''; }
+  getDataRange() { return this.getRange(1, 1, this.getLastRow(), this.getLastColumn()); }
   cell(r, c) { const row = this.rows[r - 1] || []; const v = row[c - 1]; return v === undefined ? '' : v; }
   put(r, c, v) { while (this.rows.length < r) this.rows.push([]); const row = this.rows[r - 1]; while (row.length < c) row.push(''); row[c - 1] = v; }
 }
@@ -42,6 +44,8 @@ class Range {
   getValues() { const out = []; for (let i = 0; i < this.nr; i++) { const row = []; for (let j = 0; j < this.nc; j++) row.push(this.sh.cell(this.r + i, this.c + j)); out.push(row); } return out; }
   setValues(v) { v.forEach((row, i) => row.forEach((x, j) => this.sh.put(this.r + i, this.c + j, x))); return this; }
   getValue() { return this.getValues()[0][0]; }
+  getFormulas() { return this.getValues().map(r => r.map(v => (typeof v === 'string' && v.startsWith('=') ? v : ''))); }
+  getDisplayValues() { return this.getValues().map(r => r.map(v => String(v))); }
   setValue(x) { return this.setValues([[x]]); }
 }
 
@@ -300,4 +304,57 @@ test('ozon_: после 5 сбоев подряд отдаёт ошибку', ()
   const { ctx } = load({ fetch: () => { n++; throw new Error('Адрес недоступен'); } });
   assert.throws(() => ctx.ozon_('/v1/test', {}), /Адрес недоступен/);
   assert.equal(n, 5);
+});
+
+/* ---------- Закуп ---------- */
+const SOURCES = [
+  { 'Источник': 'Прайс POSCENTER', 'ID таблицы': 'ID_POS', 'Лист': 'Лист1', 'Колонка кода': 'A', 'Колонка закупа': 'B', 'Валюта': 'RUB' },
+  { 'Источник': 'Прайс MERTECH', 'ID таблицы': 'ID_MER', 'Лист': 'Лист1', 'Колонка кода': 'A', 'Колонка закупа': 'B', 'Валюта': 'RUB' }
+];
+function priceBook(rows) { const sh = new Sheet(rows); sh.name = 'Лист1'; return { getSheets: () => [sh] }; }
+
+test('закуп: код ищется только в своём прайсе, чужой прайс не подставляется', () => {
+  const env = load({ settings: { COST_1C_SHEET_ID: '' } });
+  const { ctx } = env;
+  ctx.SpreadsheetApp.openById = id => ({ ID_POS: priceBook([['4865', 21678], ['4863', 16300]]), ID_MER: priceBook([['9999', 500]]) })[id];
+  ctx.readTable_ = () => ({ rows: SOURCES });
+  ctx.readMain_ = () => ({ rows: [
+    { _row: 3, 'Артикул': '4865- MERTECH 2310 P2D', 'Источник закупа': 'Прайс MERTECH', 'Код в прайсе': 4865, 'Product ID': 1 },
+    { _row: 4, 'Артикул': '4863 - РИТЕЙЛ-02Ф', 'Источник закупа': 'Прайс POSCENTER', 'Код в прайсе': 4863, 'Product ID': 2 },
+    { _row: 5, 'Артикул': 'только 1С', 'Источник закупа': '1С', 'Код в прайсе': 4863, 'Product ID': 3 }
+  ] });
+  const cost = {};
+  ctx.mainPatch_ = (m, name, patch) => { if (name === 'Закуп, ₽') Object.assign(cost, patch); };
+  ctx.importCosts_();
+  assert.deepEqual(plain(cost), { 3: '', 4: 16300, 5: '' }, 'MERTECH-товар не берёт цену POSCENTER; «1С» не лезет в прайсы');
+  assert.ok(env.logs.some(l => /Кода нет в своём прайсе.*4865- MERTECH 2310 P2D/.test(l)));
+});
+
+test('источники закупа из старой таблицы: по ID прайса в формуле', () => {
+  const env = load({ settings: { COST_1C_SHEET_ID: 'ID_1C' } });
+  const { ctx } = env;
+  const old = new Sheet([
+    ['555'],
+    ['Артикул', 'SKU', 'Product ID', 'Прайс', 'Название', 'Категория', 'Поставщик', 'Остатки', 'OZON Карта', 'Закупочная цена'],
+    ['A-pos', '', 11, 4538, '', '', '', '', '', '=IFERROR(VLOOKUP(D3,IMPORTRANGE("https://docs.google.com/spreadsheets/d/ID_POS/","Лист1!a:d"),4,0))'],
+    ['A-1c', '', 12, '', '', '', '', '', '', '=VLOOKUP(C4,IMPORTRANGE("https://docs.google.com/spreadsheets/d/ID_1C/","Prices!A:ZZ"),5,0)'],
+    ['A-mix', '', 13, 1, '', '', '', '', '', '=MAX(IMPORTRANGE("ID_POS","a"),IMPORTRANGE("ID_MER","a"))'],
+    ['A-man', '', 14, 7, '', '', '', '', '', '=IMPORTRANGE("ID_MER","a")'],
+    ['A-same', '', 15, 8, '', '', '', '', '', '=IMPORTRANGE("ID_MER","a")']
+  ]);
+  ctx.SpreadsheetApp.openById = () => ({ getSheetByName: () => old });
+  ctx.readTable_ = () => ({ rows: SOURCES });
+  ctx.readMain_ = () => ({ rows: [
+    { _row: 3, 'Артикул': 'A-pos', 'Product ID': 11, 'Источник закупа': '1С', 'Код в прайсе': '' },
+    { _row: 4, 'Артикул': 'A-1c', 'Product ID': 12, 'Источник закупа': 'Прайс MERTECH', 'Код в прайсе': 5 },
+    { _row: 5, 'Артикул': 'A-mix', 'Product ID': 13, 'Источник закупа': '1С', 'Код в прайсе': 1 },
+    { _row: 6, 'Артикул': 'A-man', 'Product ID': 14, 'Источник закупа': 'вручную', 'Код в прайсе': 7 },
+    { _row: 7, 'Артикул': 'A-same', 'Product ID': 99, 'Источник закупа': 'Прайс MERTECH', 'Код в прайсе': 8 }
+  ] });
+  const patches = {};
+  ctx.mainPatch_ = (m, name, patch) => { patches[name] = plain(patch); };
+  const msg = ctx.sourcesFromOldTable_();
+  assert.deepEqual(patches['Источник закупа'], { 3: 'Прайс POSCENTER', 4: '1С' });
+  assert.deepEqual(patches['Код в прайсе'], { 3: 4538 });
+  assert.match(msg, /источник поменян у 2, совпадал у 1, не тронуты .*: 1/);
 });
