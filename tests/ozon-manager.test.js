@@ -387,3 +387,12 @@ test('боевой режим: результат виден после пере
   env.ctx.removeMarked_();
   assert.equal(resultOf(env.sh, 'E-del'), '✓ убран');
 });
+
+/* ---------- Формулы листа Ozon ---------- */
+test('цена факт. берёт цену в акции, если она ниже цены продажи (как в старой таблице)', () => {
+  const { ctx } = load();
+  const f = ctx.mainFormulas_(ctx.MAIN_COLS || vm.runInContext('MAIN_COLS', ctx), 3)['Цена факт., ₽'];
+  const col = n => '$' + ctx.letter_(vm.runInContext('MAIN_COLS', ctx).indexOf(n) + 1) + '3';
+  assert.ok(f.includes(`N(${col('Мин. цена в акциях, ₽')})<`), f);
+  assert.ok(f.includes(col('Цена продажи, ₽')), f);
+});
