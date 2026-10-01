@@ -2404,7 +2404,7 @@ function formatPlanFact_() {
   const col = n => { const i = PF_COLS.indexOf(n); return i < 0 ? null : sh.getRange(2, i + 1, rows, 1); };
   ['Выручка, ₽', 'Комиссия, ₽', 'Логистика и услуги, ₽', 'Возвраты, ₽', 'Реклама, ₽', 'Штрафы, ₽', 'Прочее, ₽',
    'К выплате, ₽', 'Закуп проданного, ₽', 'Прибыль факт, ₽', 'Прибыль факт/шт, ₽', 'Прибыль план/шт, ₽',
-   'Факт − план/шт, ₽'].forEach(n => { const r = col(n); if (r) r.setNumberFormat('#,##0'); });
+   'Факт − план/шт, ₽', 'Логистика факт/шт, ₽'].forEach(n => { const r = col(n); if (r) r.setNumberFormat('#,##0'); });
   ['Продано, шт', 'Возвращено, шт'].forEach(n => { const r = col(n); if (r) r.setNumberFormat('#,##0'); });
   ['Удержания факт, %', 'Удержания план, %', 'Разница, п.п.', 'Маржа факт, %']
     .forEach(n => { const r = col(n); if (r) r.setNumberFormat('0.0%'); });
