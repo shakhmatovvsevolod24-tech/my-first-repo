@@ -494,3 +494,17 @@ test('логистика: факт из «План-факта», иначе та
   assert.equal(byFact, 600);   // (100 + 200) / 0.5
   assert.equal(byTariff, 1200); // (100 + 500) / 0.5
 });
+
+test('старая таблица без доступа: понятная ошибка со ссылкой', () => {
+  const { ctx } = load();
+  ctx.SpreadsheetApp.openById = () => ({ getSheetByName: () => { throw new Error('You do not have permission to access the requested document.'); } });
+  ctx.Session.getActiveUser = () => ({ getEmail: () => 'user@example.com' });
+  assert.throws(() => ctx.sourcesFromOldTable_(), /нет доступа к старой таблице у аккаунта user@example\.com.*1Rdh8/);
+});
+
+test('отчёты снимают старый фильтр перед новым', () => {
+  ['abcAnalysis_', 'dumpingReport_'].forEach(fn => {
+    const body = SRC.slice(SRC.indexOf(`function ${fn}()`)).split('\nfunction ')[0];
+    assert.ok(body.indexOf('getFilter().remove()') >= 0 && body.indexOf('getFilter().remove()') < body.indexOf('createFilter'), fn);
+  });
+});

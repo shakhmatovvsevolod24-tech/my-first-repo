@@ -571,18 +571,24 @@ var OLD_TABLE_ID_ = '1Rdh8-EQEt6UiPl8ta032kKbQ2JsFDHauBmPDY9SBqX0';   // ста�
 function sourcesFromOldTable() { run_('Источники закупа из старой таблицы', sourcesFromOldTable_); }
 
 function sourcesFromOldTable_() {
-  let oldSh;
-  try { oldSh = SpreadsheetApp.openById(OLD_TABLE_ID_).getSheetByName('Ozon'); }
-  catch (e) { return `нет доступа к старой таблице: https://docs.google.com/spreadsheets/d/${OLD_TABLE_ID_}`; }
-  if (!oldSh) throw new Error('В старой таблице нет листа Ozon');
-  const oh = headersAt_(oldSh, 2).map(x => x.toLowerCase());
-  const find = re => oh.findIndex(x => re.test(x));
-  const iArt = find(/^артикул/), iPid = find(/^product id/), iCost = find(/закуп/), iCode = find(/^прайс/);
-  if (iArt < 0 || iPid < 0 || iCost < 0) throw new Error('В старой таблице нет колонок «Артикул», «Product ID» или «Закупочная цена»');
-  const n = oldSh.getLastRow() - 2;
-  if (n < 1) return 'старая таблица пустая';
-  const vals = oldSh.getRange(3, 1, n, oh.length).getValues();
-  const fx = oldSh.getRange(3, iCost + 1, n, 1).getFormulas();
+  // Google проверяет доступ не при открытии, а при первом чтении — поэтому всё чтение внутри try
+  let oh, iArt, iPid, iCost, iCode, vals, fx;
+  try {
+    const oldSh = SpreadsheetApp.openById(OLD_TABLE_ID_).getSheetByName('Ozon');
+    if (!oldSh) throw new Error('В старой таблице нет листа Ozon');
+    oh = headersAt_(oldSh, 2).map(x => x.toLowerCase());
+    const find = re => oh.findIndex(x => re.test(x));
+    iArt = find(/^артикул/); iPid = find(/^product id/); iCost = find(/закуп/); iCode = find(/^прайс/);
+    if (iArt < 0 || iPid < 0 || iCost < 0) throw new Error('В старой таблице нет колонок «Артикул», «Product ID» или «Закупочная цена»');
+    const n = oldSh.getLastRow() - 2;
+    if (n < 1) return 'старая таблица пустая';
+    vals = oldSh.getRange(3, 1, n, oh.length).getValues();
+    fx = oldSh.getRange(3, iCost + 1, n, 1).getFormulas();
+  } catch (e) {
+    if (/нет листа|нет колонок/.test(e.message)) throw e;
+    const who = (() => { try { return Session.getActiveUser().getEmail(); } catch (x) { return ''; } })();
+    throw new Error(`нет доступа к старой таблице${who ? ' у аккаунта ' + who : ''}. Откройте https://docs.google.com/spreadsheets/d/${OLD_TABLE_ID_} и запросите доступ на чтение`);
+  }
 
   const names = {};                                       // ID таблицы → название источника
   readTable_(SHEETS.SOURCES).rows.forEach(s => { const id = String(s['ID таблицы']).trim(); if (id) names[id] = String(s['Источник']).trim(); });
@@ -1666,6 +1672,7 @@ function dumpingReport_() {
 
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getSheetByName(DUMPING_SHEET) || ss.insertSheet(DUMPING_SHEET);
+  if (sh.getFilter()) sh.getFilter().remove();             // clear() фильтр не снимает
   sh.clear();
   sh.getRange(1, 1, 1, DUMPING_COLS.length).setValues([DUMPING_COLS]).setFontWeight('bold')
     .setBackground(OZ_UI.header).setFontColor(OZ_UI.headerText).setFontSize(9).setWrap(true);
@@ -1725,6 +1732,7 @@ function abcAnalysis_() {
 
   const ss = SpreadsheetApp.getActive();
   const sh = ss.getSheetByName(ABC_SHEET) || ss.insertSheet(ABC_SHEET);
+  if (sh.getFilter()) sh.getFilter().remove();             // clear() фильтр не снимает
   sh.clear();
   sh.getRange(1, 1, 1, ABC_COLS.length).setValues([ABC_COLS]).setFontWeight('bold')
     .setBackground(OZ_UI.header).setFontColor(OZ_UI.headerText).setFontSize(9).setWrap(true);
