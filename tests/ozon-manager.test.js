@@ -479,3 +479,18 @@ test('AN/AO: разница только с Ozon и по цене для пок�
   assert.equal(cols.indexOf('Разница с Ozon') + 1, 40, 'колонка AN');
   assert.equal(cols.indexOf('Позиция на Ozon') + 1, 41, 'колонка AO');
 });
+
+test('логистика: факт из «План-факта», иначе тариф', () => {
+  const { ctx } = load();
+  const cols = vm.runInContext('MAIN_COLS', ctx);
+  const F = ctx.mainFormulas_(cols, 3);
+  assert.match(F['Логистика с выкупом, ₽'], /План-факт/);
+  assert.match(F['Логистика: основа'], /"факт"/);
+  const pf = ctx.pfFormulas_(2)['Логистика факт/шт, ₽'];
+  assert.match(pf, /LOGISTICS_FACT_MIN_SALES/);
+  const t = { 'Комиссия FBS, %': 50, 'Логистика FBS мин, ₽': 100, 'Логистика FBS макс, ₽': 500, 'Обработка FBS, ₽': 0, 'Последняя миля FBS, ₽': 0 };
+  const byFact = ctx.priceForMargin_({ 'Закуп, ₽': 100, 'Выкуп, %': 1, 'Логистика: основа': 'факт', 'Логистика с выкупом, ₽': 200 }, t, 0, 0, 0, 1, 'MAX');
+  const byTariff = ctx.priceForMargin_({ 'Закуп, ₽': 100, 'Выкуп, %': 1 }, t, 0, 0, 0, 1, 'MAX');
+  assert.equal(byFact, 600);   // (100 + 200) / 0.5
+  assert.equal(byTariff, 1200); // (100 + 500) / 0.5
+});
