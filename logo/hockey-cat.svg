@@ -1,0 +1,151 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="ice" cx="50%" cy="40%" r="60%">
+      <stop offset="0" stop-color="#ffd9a8"/>
+      <stop offset="0.55" stop-color="#f4a6b8"/>
+      <stop offset="1" stop-color="#7a5ca8"/>
+    </radialGradient>
+    <linearGradient id="fur" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b98a5a"/>
+      <stop offset="1" stop-color="#8a6240"/>
+    </linearGradient>
+    <linearGradient id="helmet" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e3263f"/>
+      <stop offset="1" stop-color="#a50f24"/>
+    </linearGradient>
+    <linearGradient id="jersey" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d81e36"/>
+      <stop offset="1" stop-color="#9c0d20"/>
+    </linearGradient>
+    <radialGradient id="eye" cx="50%" cy="45%" r="55%">
+      <stop offset="0" stop-color="#f6c64a"/>
+      <stop offset="1" stop-color="#b8741a"/>
+    </radialGradient>
+    <clipPath id="badge"><circle cx="256" cy="246" r="200"/></clipPath>
+  </defs>
+
+  <!-- Badge -->
+  <circle cx="256" cy="246" r="226" fill="#0b2545"/>
+  <circle cx="256" cy="246" r="214" fill="none" stroke="#ffffff" stroke-width="6"/>
+  <circle cx="256" cy="246" r="200" fill="url(#ice)"/>
+
+  <g clip-path="url(#badge)">
+    <!-- setting sun -->
+    <circle cx="380" cy="190" r="34" fill="#fff4d6" opacity="0.9"/>
+    <!-- blocky hills -->
+    <path d="M56 300 h40 v-20 h36 v-16 h44 v22 h40 v-12 h120 v-18 h48 v14 h40 v-10 h40 v240 H56z" fill="#3f6b2a" opacity="0.85"/>
+
+    <!-- Crossed sticks -->
+    <g stroke="#0b2545" stroke-width="4" stroke-linejoin="round">
+      <path d="M118 96 L330 400 L392 404 L398 386 L346 380 L138 82 Z" fill="#d9a35b"/>
+      <path d="M394 96 L182 400 L120 404 L114 386 L166 380 L374 82 Z" fill="#d9a35b"/>
+      <path d="M330 400 L392 404 L398 386 L346 380 Z" fill="#0b2545"/>
+      <path d="M182 400 L120 404 L114 386 L166 380 Z" fill="#0b2545"/>
+    </g>
+
+    <!-- Puck -->
+    <ellipse cx="96" cy="372" rx="22" ry="7" fill="#0b2545"/>
+    <ellipse cx="96" cy="366" rx="22" ry="7" fill="#26262e" stroke="#0b2545" stroke-width="2"/>
+
+    <!-- Body / jersey -->
+    <path d="M118 470 C120 380 170 340 256 336 C342 340 392 380 394 470 Z" fill="url(#jersey)" stroke="#0b2545" stroke-width="5"/>
+    <!-- sleeve stripes -->
+    <path d="M132 420 C150 400 170 392 186 388 L192 408 C176 412 158 420 140 440 Z" fill="#ffffff"/>
+    <path d="M380 420 C362 400 342 392 326 388 L320 408 C336 412 354 420 372 440 Z" fill="#ffffff"/>
+    <!-- white chest fur in V-neck -->
+    <path d="M206 340 L256 410 L306 340 Z" fill="#ffffff" stroke="#0b2545" stroke-width="4"/>
+    <path d="M222 344 q10 14 18 10 q8 18 16 10 q8 18 16 -2 q10 6 16 -16" fill="none" stroke="#e6ddd3" stroke-width="3"/>
+    <!-- collar -->
+    <path d="M198 338 L256 418 L314 338" fill="none" stroke="#0b2545" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M198 338 L256 418 L314 338" fill="none" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/>
+    <!-- number -->
+    <text x="256" y="462" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-weight="bold" font-size="44" fill="#ffffff" stroke="#0b2545" stroke-width="2">9</text>
+  </g>
+
+  <!-- Head -->
+  <g>
+    <!-- ears (poke out of helmet) -->
+    <path d="M150 168 L160 70 L224 124 Z" fill="url(#fur)" stroke="#0b2545" stroke-width="5" stroke-linejoin="round"/>
+    <path d="M362 168 L352 70 L288 124 Z" fill="url(#fur)" stroke="#0b2545" stroke-width="5" stroke-linejoin="round"/>
+    <path d="M164 148 L168 92 L208 126 Z" fill="#f2b8b0"/>
+    <path d="M348 148 L344 92 L304 126 Z" fill="#f2b8b0"/>
+    <path d="M170 140 l2 -22 M180 136 l4 -18 M190 132 l6 -14" stroke="#fff6ea" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M342 140 l-2 -22 M332 136 l-4 -18 M322 132 l-6 -14" stroke="#fff6ea" stroke-width="2.5" stroke-linecap="round"/>
+
+    <!-- fluffy face -->
+    <path d="M256 118
+             C320 118 368 150 378 208
+             L392 222 L376 236 L388 256 L366 266 L372 290
+             C340 336 300 352 256 352
+             C212 352 172 336 140 290
+             L146 266 L124 256 L136 236 L120 222 L134 208
+             C144 150 192 118 256 118 Z"
+          fill="url(#fur)" stroke="#0b2545" stroke-width="5" stroke-linejoin="round"/>
+
+    <!-- cheek stripes -->
+    <path d="M140 232 q22 4 40 -2 M138 252 q24 6 44 0 M372 232 q-22 4 -40 -2 M374 252 q-24 6 -44 0"
+          fill="none" stroke="#4a3220" stroke-width="5" stroke-linecap="round"/>
+
+    <!-- white muzzle & chin -->
+    <path d="M256 236 C222 236 196 262 200 294 C206 330 236 346 256 346 C276 346 306 330 312 294 C316 262 290 236 256 236 Z" fill="#ffffff"/>
+    <path d="M232 250 C218 238 206 228 204 212 M280 250 C294 238 306 228 308 212" fill="none" stroke="#ffffff" stroke-width="16" stroke-linecap="round"/>
+
+    <!-- eyes -->
+    <g stroke="#0b2545" stroke-width="4">
+      <circle cx="210" cy="222" r="27" fill="url(#eye)"/>
+      <circle cx="302" cy="222" r="27" fill="url(#eye)"/>
+    </g>
+    <circle cx="210" cy="224" r="17" fill="#120a04"/>
+    <circle cx="302" cy="224" r="17" fill="#120a04"/>
+    <circle cx="202" cy="214" r="6" fill="#ffffff"/>
+    <circle cx="294" cy="214" r="6" fill="#ffffff"/>
+    <circle cx="218" cy="232" r="2.5" fill="#ffffff"/>
+    <circle cx="310" cy="232" r="2.5" fill="#ffffff"/>
+    <!-- determined brows -->
+    <path d="M180 192 L236 200 M332 192 L276 200" stroke="#0b2545" stroke-width="6" stroke-linecap="round"/>
+
+    <!-- nose & mouth -->
+    <path d="M244 262 L268 262 L256 276 Z" fill="#e8848a" stroke="#0b2545" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M256 276 v10 M256 286 q-12 12 -24 2 M256 286 q12 12 24 2" fill="none" stroke="#0b2545" stroke-width="3.5" stroke-linecap="round"/>
+
+    <!-- whiskers -->
+    <g stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" opacity="0.95">
+      <path d="M214 282 L150 272 M214 290 L148 292 M216 298 L154 312"/>
+      <path d="M298 282 L362 272 M298 290 L364 292 M296 298 L358 312"/>
+    </g>
+
+    <!-- Helmet -->
+    <path d="M150 196
+             C146 132 196 98 256 98
+             C316 98 366 132 362 196
+             L338 196 C334 168 300 160 256 160 C212 160 178 168 174 196 Z"
+          fill="url(#helmet)" stroke="#0b2545" stroke-width="5" stroke-linejoin="round"/>
+    <!-- ear holes in helmet -->
+    <path d="M176 140 L168 92 L208 120 C196 124 184 130 176 140 Z" fill="url(#fur)" stroke="#0b2545" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M336 140 L344 92 L304 120 C316 124 328 130 336 140 Z" fill="url(#fur)" stroke="#0b2545" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M178 132 L174 104 L198 120 Z" fill="#f2b8b0"/>
+    <path d="M334 132 L338 104 L314 120 Z" fill="#f2b8b0"/>
+    <!-- helmet stripe and vents -->
+    <path d="M242 100 h28 v60 h-28 Z" fill="#ffffff" stroke="#0b2545" stroke-width="3"/>
+    <rect x="222" y="120" width="10" height="20" rx="5" fill="#0b2545"/>
+    <rect x="280" y="120" width="10" height="20" rx="5" fill="#0b2545"/>
+    <!-- visor -->
+    <path d="M166 192 C190 176 322 176 346 192 L340 206 C316 194 196 194 172 206 Z" fill="#9fd3ff" fill-opacity="0.75" stroke="#0b2545" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M190 190 C220 184 250 182 276 183" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.9"/>
+    <!-- side clips & chin strap -->
+    <circle cx="156" cy="200" r="8" fill="#0b2545"/>
+    <circle cx="356" cy="200" r="8" fill="#0b2545"/>
+    <path d="M156 204 C164 270 196 320 236 334 M356 204 C348 270 316 320 276 334" fill="none" stroke="#0b2545" stroke-width="5" stroke-linecap="round"/>
+  </g>
+
+  <!-- Ribbon -->
+  <g transform="translate(0 32)">
+    <path d="M40 408 L84 396 L84 462 L40 474 L58 441 Z" fill="#8a0c1c" stroke="#0b2545" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M472 408 L428 396 L428 462 L472 474 L454 441 Z" fill="#8a0c1c" stroke="#0b2545" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M70 388 Q256 360 442 388 L442 450 Q256 422 70 450 Z" fill="#d81e36" stroke="#0b2545" stroke-width="5" stroke-linejoin="round"/>
+    <path id="ribbonText" d="M80 430 Q256 400 432 430" fill="none"/>
+    <text font-family="DejaVu Sans, Arial, sans-serif" font-weight="bold" font-size="30" letter-spacing="2" fill="#ffffff" stroke="#0b2545" stroke-width="1">
+      <textPath href="#ribbonText" startOffset="50%" text-anchor="middle">КОТ-ХОККЕИСТ</textPath>
+    </text>
+  </g>
+</svg>
