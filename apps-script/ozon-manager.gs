@@ -13,7 +13,7 @@
 var OZON_HOST = 'https://api-seller.ozon.ru';
 var SHEETS = {
   MAIN: 'Ozon', BOG: 'Бог акций', SETTINGS: 'Настройки', SOURCES: 'Источники закупа',
-  TARIFFS: 'Тарифы', DISCOUNTS: 'Заявки на скидку', LOG: 'Лог'
+  TARIFFS: 'Тарифы', LOG: 'Лог'
 };
 var MAIN_HDR_ROW = 2, MAIN_FIRST = 3;          // лист Ozon: строка 1 — группы колонок, 2 — заголовки
 var NEW_BLOCK = '🆕 Новые товары';
@@ -394,7 +394,11 @@ function syncTariffs_() {
       'Мин. цена на других площадках': minOf(ix.external_index_data),
       'Индекс цены': ix.color_index || ix.price_index || '', 'Обновлено': now,
       'Обработка возврата FBS, ₽': c.fbs_return_flow_amount,
-      'Обратная логистика FBS, ₽': c.fbs_return_flow_trans_max_amount
+      'Обратная логистика FBS, ₽': c.fbs_return_flow_trans_max_amount,
+      // цена, которую видит покупатель (с акциями), и индекс цены, который считает сам Ozon: наша цена / мин. цена
+      'Цена для покупателя': num_(p.marketing_seller_price) || num_(p.marketing_price) || num_(p.price),
+      'Индекс цены Ozon': ix.ozon_index_data ? num_(ix.ozon_index_data.price_index_value) : '',
+      'Индекс других площадок': ix.external_index_data ? num_(ix.external_index_data.price_index_value) : ''
     };
   }));
   return `позиций: ${items.length}`;
@@ -1189,7 +1193,7 @@ function writeBogNotes_(note, dry) {
 
 /* ================== 04_prices_discounts.gs ================== */
 /** =====================================================================
- *  ВЫГРУЗКА ЦЕН (с листа Ozon) и ЗАЯВКИ НА СКИДКУ
+ *  ВЫГРУЗКА ЦЕН (с листа Ozon)
  * ===================================================================== */
 function uploadPrices()       { run_('Отправка отмеченных цен', () => uploadPrices_('checked')); }
 function uploadAllPrices()    { run_('Выгрузка всех цен', () => uploadPrices_('all')); }
@@ -1198,9 +1202,6 @@ function setPricesToPromoMargin()   { run_('Цены по целевой мар�
 function setPricesToMinMargin()     { run_('Цены по минимальной марже', () => setPricesToMargin_('MIN_MARGIN', 'Мин. цена, ₽')); }
 function explainProduct()           { explainProduct_(); }
 function pricePromoAndUpload()      { run_('Цены 12% + выгрузка', pricePromoAndUpload_); }
-function loadDiscountTasks()        { run_('Заявки на скидку', loadDiscountTasks_); }
-function autoDecideDiscounts()      { run_('Заявки: авто-решение', autoDecideDiscounts_); }
-function processDiscountDecisions() { run_('Заявки: применить решения', processDiscountDecisions_); }
 
 /** Выставить всем маржу PROMO_MARGIN, вывести из неподходящих акций и сразу отправить цены в Ozon */
 function pricePromoAndUpload_() {
@@ -1395,59 +1396,6 @@ function validatePrice_(p, maxChg) {
   return '';
 }
 
-/* ---------- Заявки на скидку (решения привязаны к id, не к строке) ---------- */
-function loadDiscountTasks_() {
-  const keep = {}; readTable_(SHEETS.DISCOUNTS).rows.forEach(r => keep[String(r['id'])] = r);
-  const tasks = [];
-  ['NEW', 'SEEN'].forEach(status => {
-    for (let page = 1; page <= 200; page++) {
-      const part = ozon_('/v1/actions/discounts-task/list', { status, page, limit: 50 }).result || [];
-      part.forEach(x => tasks.push(x)); if (part.length < 50) break;
-    }
-  });
-  writeTable_(SHEETS.DISCOUNTS, tasks.map(x => { const o = keep[String(x.id)] || {}; return {
-    'id': String(x.id), 'Создана': date_(x.created_at), 'Статус': x.status, 'Артикул': x.offer_id, 'Покупатель': x.customer_name,
-    'Запрошенная цена': x.requested_price, 'Исходная цена': x.original_price, 'Скидка, %': x.discount_percent,
-    'Кол-во мин': x.requested_quantity_min, 'Кол-во макс': x.requested_quantity_max,
-    'Решение': o['Решение'] || '', 'Одобренная цена': o['Одобренная цена'] || '', 'Результат': o['Результат'] || '' }; }));
-  return `активных заявок: ${tasks.length}`;
-}
-/** Как старый DiscountsTrigger: загрузить → одобрить всё ≥ порога, отклонить остальное → отправить */
-function autoDecideDiscounts_() {
-  loadDiscountTasks_(); SpreadsheetApp.flush();
-  const t = readTable_(SHEETS.DISCOUNTS), patch = {};
-  t.rows.forEach(r => { if (r['Решение']) return; const rec = String(r['Рекомендация'] || '');
-    if (rec.startsWith('✓')) patch[r._row] = 'Одобрить'; else if (rec.startsWith('✗')) patch[r._row] = 'Отклонить'; });
-  patchColumn_(t.sh, t.h, 'Решение', patch);
-  return processDiscountDecisions_();
-}
-function processDiscountDecisions_() {
-  const t = readTable_(SHEETS.DISCOUNTS), dry = isDryRun_();
-  const approve = [], decline = [], res = {}, rowById = {};
-  t.rows.forEach(r => {
-    const d = String(r['Решение'] || '').trim(); if (!d) return;
-    const id = String(r['id']); rowById[id] = r._row;
-    if (d === 'Отклонить') { decline.push({ id }); return; }
-    if (d !== 'Одобрить') return;
-    const price = Math.round(Number(r['Одобренная цена']) || Number(r['Запрошенная цена']));
-    const floor = Number(r['Порог акций, ₽']) || 0;
-    if (!floor) { res[r._row] = '✗ нет порога (нет закупа)'; return; }
-    if (price < floor) { res[r._row] = `✗ ниже порога ${floor}`; return; }
-    approve.push({ id, approved_price: price, approved_quantity_min: Number(r['Кол-во мин']) || 1, approved_quantity_max: Number(r['Кол-во макс']) || 1 });
-  });
-  const send = (path, list, txt) => chunk_(list, 50).forEach(part => {
-    if (dry) { part.forEach(x => res[rowById[x.id]] = 'ПРОВЕРКА: ' + txt); return; }
-    const r = ozon_(path, { tasks: part }), fails = {};
-    ((r.result && r.result.fail_details) || []).forEach(f => fails[String(f.task_id)] = f.error_for_user);
-    part.forEach(x => res[rowById[x.id]] = fails[x.id] ? '✗ ' + fails[x.id] : '✓ ' + txt);
-  });
-  send('/v1/actions/discounts-task/approve', approve, 'одобрено');
-  send('/v1/actions/discounts-task/decline', decline, 'отклонено');
-  patchColumn_(t.sh, t.h, 'Результат', res);
-  const done = {}; Object.keys(res).forEach(row => { if (res[row].startsWith('✓')) done[row] = ''; });
-  patchColumn_(t.sh, t.h, 'Решение', done);
-  return `${dry ? '[ПРОВЕРКА] ' : ''}одобрить: ${approve.length}, отклонить: ${decline.length}`;
-}
 
 
 /* ================== 05_menu.gs ================== */
@@ -1479,7 +1427,8 @@ function onOpen() {
       .addItem('Аудит: сверить расчёт с Ozon', 'runAudit')
       .addItem('План-факт по финотчёту', 'syncFinance')
       .addItem('Выкуп и возвраты', 'syncBuyout')
-      .addItem('ABC-анализ по прибыли', 'abcAnalysis'))
+      .addItem('ABC-анализ по прибыли', 'abcAnalysis')
+      .addItem('Поиск демпинга', 'dumpingReport'))
     .addToUi();
 
   ui.createMenu('🏷 АКЦИИ')
@@ -1493,10 +1442,6 @@ function onOpen() {
       .addItem('Добавить все подходящие по марже', 'addEligibleToAll')
       .addItem('Убрать неподходящие по марже', 'removeIneligible')
       .addItem('Распределить по самым выгодным акциям', 'distributeBestActions'))
-    .addSubMenu(ui.createMenu('Заявки на скидку')
-      .addItem('Загрузить', 'loadDiscountTasks')
-      .addItem('Решить автоматически', 'autoDecideDiscounts')
-      .addItem('Применить мои решения', 'processDiscountDecisions'))
     .addToUi();
 
   ui.createMenu('📦 ОСТАТКИ')
@@ -1568,6 +1513,7 @@ function syncAll() {
     step('Бог акций', refreshActions_);
     SpreadsheetApp.flush();
     step('Аудит', runAudit_);
+    step('Демпинг', dumpingReport_);
     return out.join(' | ');
   });
 }
@@ -1669,6 +1615,74 @@ function removeDailyTrigger() {
 function syncBuyout()  { run_('Выкуп и возвраты', syncBuyout_); }
 function syncFinance() { run_('План-факт', syncFinance_); }
 function abcAnalysis() { run_('ABC-анализ', abcAnalysis_); }
+function dumpingReport() { run_('Поиск демпинга', dumpingReport_); }
+
+/* ---------- Демпинг: где конкуренты продают дешевле, чем мы вообще можем ----------
+ * Цены конкурентов — из индекса цен Ozon (лист «Тарифы»): минимальная цена того же товара у других
+ * продавцов на Ozon и на других площадках. Кто именно продаёт, Ozon через API не сообщает.
+ *   ⛔ ниже нашего закупа   — конкурент (на Ozon или другой площадке) продаёт дешевле, чем мы покупаем;
+ *   ⚠ ниже безубыточности  — только Ozon: у нас по такой цене каждая продажа в минус;
+ *   ▲ дешевле на X%        — только Ozon: разрыв больше DUMPING_GAP, но в плюс выйти можно.
+ * С другими площадками безубыточность не сравниваем: там свои комиссии, и цена «в минус для Ozon» для них нормальна.
+ */
+var DUMPING_SHEET = 'Демпинг';
+var DUMPING_COLS = ['Артикул', 'Название', 'Категория', 'Остаток FBS', 'Заказы 60 дн', 'Наша цена для покупателя, ₽',
+  'Закуп, ₽', 'Цена безубыточности, ₽', 'Конкурент Ozon, ₽', 'Мы дороже Ozon на, %', 'Индекс цены Ozon',
+  'Другие площадки, ₽', 'Мы дороже др. площадок на, %', 'Где дешевле', 'Вердикт'];
+
+/** Вердикт: [порядок, текст] или null. ext — цена на других площадках: для неё только «ниже закупа» */
+function dumpingVerdict_(our, cost, breakEven, comp, gap, ext) {
+  if (cost > 0 && ext > 0 && ext < cost && !(comp > 0 && comp < ext)) return [0, '⛔ ниже нашего закупа'];
+  if (!(comp > 0)) return null;
+  if (cost > 0 && comp < cost) return [0, '⛔ ниже нашего закупа'];
+  if (breakEven > 0 && comp < breakEven) return [1, '⚠ ниже нашей безубыточности'];
+  if (our > 0 && our / comp - 1 > gap) return [2, `▲ дешевле нас на ${Math.round((our / comp - 1) * 100)}%`];
+  return null;
+}
+
+function dumpingReport_() {
+  const gap = Number(cfg_('DUMPING_GAP', 0.2));
+  const tariff = {}; readTable_(SHEETS.TARIFFS).rows.forEach(t => tariff[key_(t['product_id'])] = t);
+  const out = [];
+  readMain_().rows.forEach(r => {
+    const t = tariff[key_(r['Product ID'])] || {};
+    const ozonC = Number(r['Конкурент Ozon, ₽']) || 0, extC = Number(r['Другие площадки, ₽']) || 0;
+    if (!ozonC && !extC) return;
+    const act = Number(r['Мин. цена в акциях, ₽']) || 0, onOzon = Number(r['Цена на Ozon, ₽']) || 0;
+    const our = Number(t['Цена для покупателя']) || (act > 0 && onOzon ? Math.min(act, onOzon) : onOzon);
+    const cost = Number(r['Закуп, ₽']) || 0, be = Number(r['Цена безубыточности, ₽']) || 0;
+    const v = dumpingVerdict_(our, cost, be, ozonC, gap, extC);
+    if (!v) return;
+    const where = v[0] === 0 && extC && (!ozonC || extC < ozonC) ? 'другие площадки' : 'Ozon';
+    out.push({ o: v[0], row: [r['Артикул'], r['Название'], r['Категория'], r['Остаток FBS'], r['Заказы 60 дн'] || '',
+      our || '', cost || '', be || '', ozonC || '', ozonC && our ? our / ozonC - 1 : '', Number(t['Индекс цены Ozon']) || '',
+      extC || '', extC && our ? our / extC - 1 : '', where, v[1]] });
+  });
+  // сначала самое опасное, внутри — товары с остатком
+  out.sort((a, b) => a.o - b.o || (Number(b.row[3]) || 0) - (Number(a.row[3]) || 0));
+
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(DUMPING_SHEET) || ss.insertSheet(DUMPING_SHEET);
+  sh.clear();
+  sh.getRange(1, 1, 1, DUMPING_COLS.length).setValues([DUMPING_COLS]).setFontWeight('bold')
+    .setBackground(OZ_UI.header).setFontColor(OZ_UI.headerText).setFontSize(9).setWrap(true);
+  sh.setFrozenRows(1);
+  if (out.length) {
+    const n = out.length;
+    sh.getRange(2, 1, n, DUMPING_COLS.length).setValues(out.map(x => x.row));
+    [6, 7, 8, 9, 12].forEach(c => sh.getRange(2, c, n, 1).setNumberFormat('#,##0'));
+    [10, 13].forEach(c => sh.getRange(2, c, n, 1).setNumberFormat('0%'));
+    sh.getRange(2, 11, n, 1).setNumberFormat('0.00');
+    const v = sh.getRange(2, DUMPING_COLS.length, n, 1);
+    const rule = (text, bg, fc) => SpreadsheetApp.newConditionalFormatRule().whenTextStartsWith(text)
+      .setBackground(bg).setFontColor(fc).setRanges([v]).build();
+    sh.setConditionalFormatRules([rule('⛔', OZ_UI.bad, OZ_UI.badText), rule('⚠', OZ_UI.warn, OZ_UI.warnText)]);
+    sh.getRange(1, 1, n + 1, DUMPING_COLS.length).createFilter();
+  }
+  sh.setColumnWidth(1, 160); sh.setColumnWidth(2, 260); sh.setColumnWidth(DUMPING_COLS.length, 220);
+  const cnt = k => out.filter(x => x.o === k).length;
+  return `ниже нашего закупа: ${cnt(0)}, ниже безубыточности: ${cnt(1)}, дешевле больше чем на ${Math.round(gap * 100)}%: ${cnt(2)}. Лист «${DUMPING_SHEET}»`;
+}
 
 /* ---------- ABC-анализ по прибыли за период «План-факта» ----------
  * Товары сортируются по фактической прибыли: A — первые ~80% прибыли, B — следующие ~15%,
@@ -1963,15 +1977,13 @@ var OZ_UI = {
 var TARIFF_COLS = ['product_id', 'Артикул', 'Цена', 'Цена до скидки', 'Мин. цена', 'Комиссия FBS, %',
   'Логистика FBS мин, ₽', 'Логистика FBS макс, ₽', 'Обработка FBS, ₽', 'Последняя миля FBS, ₽',
   'Мин. цена конкурента на Ozon', 'Мин. цена на других площадках', 'Индекс цены',
-  'Обновлено', 'Обработка возврата FBS, ₽', 'Обратная логистика FBS, ₽'];
+  'Обновлено', 'Обработка возврата FBS, ₽', 'Обратная логистика FBS, ₽',
+  'Цена для покупателя', 'Индекс цены Ozon', 'Индекс других площадок'];
 
 var PF_COLS = ['SKU', 'Артикул', 'Название', 'Категория', 'Продано, шт', 'Возвращено, шт', 'Выручка, ₽',
   'Комиссия, ₽', 'Логистика и услуги, ₽', 'Возвраты, ₽', 'Реклама, ₽', 'Штрафы, ₽', 'Прочее, ₽', 'К выплате, ₽', 'Удержания факт, %',
   'Удержания план, %', 'Разница, п.п.', 'Закуп проданного, ₽', 'Прибыль факт, ₽', 'Прибыль факт/шт, ₽',
   'Маржа факт, %', 'Прибыль план/шт, ₽', 'Факт − план/шт, ₽', 'Обновлено'];
-
-var DISCOUNT_COLS = ['id', 'Создана', 'Статус', 'Артикул', 'Покупатель', 'Запрошенная цена', 'Исходная цена',
-  'Скидка, %', 'Кол-во мин', 'Кол-во макс', 'Порог акций, ₽', 'Рекомендация', 'Решение', 'Одобренная цена', 'Результат'];
 
 var SOURCE_COLS = ['Источник', 'ID таблицы', 'Лист', 'Колонка кода', 'Колонка закупа', 'Колонка РРЦ',
   'Валюта', 'Товаров', 'Комментарий'];
@@ -1982,11 +1994,11 @@ var MAIN_COLS = ['Артикул', 'SKU', 'Product ID', 'Код в прайсе'
   'Упаковка, ₽', 'Эквайринг, %', 'Затраты фикс., ₽', 'Цена безубыточности, ₽', 'Мин. цена, ₽', 'Порог акций, ₽',
   'Цена продажи, ₽', 'Цена вручную', 'Цена на Ozon, ₽', 'Мин. цена в акциях, ₽', 'В акции', 'Цена факт., ₽', 'Прибыль, ₽', 'Маржа, %',
   'ROI, %', 'Статус', 'Прибыль факт/шт, ₽', 'Маржа факт, %', 'Конкурент Ozon, ₽', 'Другие площадки, ₽',
-  'Разница с рынком', 'Позиция', 'Отправить', 'Цена к отправке, ₽', 'Зачёркнутая, ₽', 'min_price, ₽', 'Результат'];
+  'Разница с Ozon', 'Позиция на Ozon', 'Отправить', 'Цена к отправке, ₽', 'Зачёркнутая, ₽', 'min_price, ₽', 'Результат'];
 
 var SETTINGS_DEFAULTS = [
   ['MIN_MARGIN', 0.10, 'Минимальная маржа: «Мин. цена», min_price в Ozon и стартовая цена новых товаров.'],
-  ['PROMO_MARGIN', 0.12, 'Маржа для акций и заявок на скидку. Ниже — не добавляем и убираем из акций (кроме ручных решений от MIN_MARGIN).'],
+  ['PROMO_MARGIN', 0.12, 'Маржа для акций. Ниже — не добавляем и убираем из акций (кроме ручных решений от MIN_MARGIN).'],
   ['ACQUIRING_RATE', 0.01, 'Эквайринг, доля от цены.'],
   ['PACKAGING_RUB', 20, 'Своя упаковка и сборка, ₽ на единицу.'],
   ['LOGISTICS_MODE', 'MAX', 'Логистика FBS: MAX, MIN или AVG.'],
@@ -2011,14 +2023,15 @@ var SETTINGS_DEFAULTS = [
   ['AUDIT_ZERO_STOCK', false, 'ОПАСНО: обнулять остаток у товаров, которые по данным Ozon продаются в убыток.'],
   ['AUDIT_MAX_ZERO', 10, 'Максимум обнулений остатка за один запуск аудита.'],
   ['AUDIT_MAX_REMOVE', 50, 'Максимум снятий с акций за один запуск аудита.'],
+  ['DUMPING_GAP', 0.2, 'Лист «Демпинг»: конкурент дешевле нас больше чем на эту долю — показываем.'],
   ['STOCKS_REFRESH_MIN', 5, 'Как часто автоматически обновлять остатки, минут. Допустимо: 1, 5, 10, 15, 30.']
 ];
 // ключи, которые скрипт больше не читает: «Обновить структуру таблицы» убирает их из «Настроек»
 var SETTINGS_OBSOLETE = ['ALLOW_BELOW_MIN', 'OLD_TABLE_ID'];
 
 var MAIN_WIDTHS = { 'В акции': 60, 'Артикул': 150, 'Название': 300, 'Категория': 110, 'Поставщик': 100, 'Источник закупа': 120,
-  'Статус': 105, 'Позиция': 100, 'Выкуп: основа': 110, 'Результат': 210 };
-var MAIN_PCT = ['Комиссия, %', 'Выкуп, %', 'Эквайринг, %', 'Маржа, %', 'ROI, %', 'Маржа факт, %', 'Разница с рынком'];
+  'Статус': 105, 'Позиция на Ozon': 110, 'Выкуп: основа': 110, 'Результат': 210 };
+var MAIN_PCT = ['Комиссия, %', 'Выкуп, %', 'Эквайринг, %', 'Маржа, %', 'ROI, %', 'Маржа факт, %', 'Разница с Ozon'];
 var MAIN_MONEY = ['Закуп, ₽', 'РРЦ, ₽', 'Логистика, ₽', 'Обработка Ozon, ₽', 'Посл. миля, ₽', 'Возврат, ₽',
   'Логистика с выкупом, ₽', 'Упаковка, ₽', 'Затраты фикс., ₽', 'Цена безубыточности, ₽', 'Мин. цена, ₽', 'Порог акций, ₽',
   'Цена продажи, ₽', 'Цена вручную', 'Цена на Ozon, ₽', 'Мин. цена в акциях, ₽', 'Цена факт., ₽', 'Прибыль, ₽',
@@ -2029,12 +2042,12 @@ var MAIN_HIDE = ['SKU', 'Product ID', 'Код в прайсе', 'Поставщ�
   'Логистика с выкупом, ₽', 'Упаковка, ₽', 'Эквайринг, %', 'Мин. цена в акциях, ₽',
   'Конкурент Ozon, ₽', 'Другие площадки, ₽', 'Цена к отправке, ₽', 'Зачёркнутая, ₽', 'min_price, ₽'];
 // колонки, которые нужно удалить из листов при обновлении структуры
-var DROP_COLS = { 'Ozon': ['Комиссия факт, %', 'Δ комиссия, п.п.', 'Ozon-карта, %'], 'План-факт': ['Комиссия факт, %'],
+var DROP_COLS = { 'Ozon': ['Комиссия факт, %', 'Δ комиссия, п.п.', 'Ozon-карта, %', 'Разница с рынком', 'Позиция'], 'План-факт': ['Комиссия факт, %'],
   'Тарифы': ['Скидка Ozon-карта, %'] };
 
 var MAIN_BANDS = [['Товар', 'Артикул', 'Остаток FBS'], ['Закуп', 'Закуп, ₽', 'РРЦ, ₽'],
   ['Расходы Ozon и свои', 'Комиссия, %', 'Затраты фикс., ₽'], ['Цены', 'Цена безубыточности, ₽', 'Цена факт., ₽'],
-  ['Итог: план и факт', 'Прибыль, ₽', 'Маржа факт, %'], ['Конкуренты', 'Конкурент Ozon, ₽', 'Позиция'],
+  ['Итог: план и факт', 'Прибыль, ₽', 'Маржа факт, %'], ['Конкуренты', 'Конкурент Ozon, ₽', 'Позиция на Ozon'],
   ['Выгрузка цен', 'Отправить', 'Результат']];
 
 /* ---------- Хелперы ---------- */
@@ -2087,8 +2100,11 @@ function mainFormulas_(h, r) {
   F['Маржа факт, %'] = `=IFERROR(IF(${pf('Маржа факт, %')}="","",${pf('Маржа факт, %')}),"")`;
   F['Конкурент Ozon, ₽'] = `=IFERROR(IF(N(${t('Мин. цена конкурента на Ozon')})=0,"",${t('Мин. цена конкурента на Ozon')}),"")`;
   F['Другие площадки, ₽'] = `=IFERROR(IF(N(${t('Мин. цена на других площадках')})=0,"",${t('Мин. цена на других площадках')}),"")`;
-  F['Разница с рынком'] = `=IF(OR(N(${c('Цена на Ozon, ₽')})=0,MIN(${c('Конкурент Ozon, ₽')},${c('Другие площадки, ₽')})=0),"",${c('Цена на Ozon, ₽')}/MIN(${c('Конкурент Ozon, ₽')},${c('Другие площадки, ₽')})-1)`;
-  F['Позиция'] = `=IF(${c('Разница с рынком')}="","— нет данных",IF(${c('Разница с рынком')}<-${cfgRef_('COMPETITOR_TOLERANCE')},"✓ дешевле",IF(${c('Разница с рынком')}<=${cfgRef_('COMPETITOR_TOLERANCE')},"≈ на уровне","▲ дороже")))`;
+  // сравниваем с тем же товаром у других продавцов на Ozon (так считает индекс цены Ozon) и по цене,
+  // которую видит покупатель: если товар в акции — по цене акции. Другие площадки сюда не подмешиваем
+  const buyer = `IF(N(${c('Мин. цена в акциях, ₽')})>0,MIN(N(${c('Цена на Ozon, ₽')}),N(${c('Мин. цена в акциях, ₽')})),N(${c('Цена на Ozon, ₽')}))`;
+  F['Разница с Ozon'] = `=IF(OR(N(${c('Цена на Ozon, ₽')})=0,N(${c('Конкурент Ozon, ₽')})=0),"",${buyer}/${c('Конкурент Ozon, ₽')}-1)`;
+  F['Позиция на Ozon'] = `=IF(${c('Разница с Ozon')}="",IF(N(${c('Другие площадки, ₽')})>0,"— только др. площадки","— нет данных"),IF(${c('Разница с Ozon')}<-${cfgRef_('COMPETITOR_TOLERANCE')},"✓ дешевле",IF(${c('Разница с Ozon')}<=${cfgRef_('COMPETITOR_TOLERANCE')},"≈ на уровне","▲ дороже на "&TEXT(${c('Разница с Ozon')},"0%"))))`;
   F['Цена к отправке, ₽'] = `=IF(NOT(ISNUMBER(${c('Цена продажи, ₽')})),"",ROUND(${c('Цена продажи, ₽')},0))`;
   F['Зачёркнутая, ₽'] = `=IF(${c('Цена к отправке, ₽')}="","",ROUND(${c('Цена к отправке, ₽')}/${cfgRef_('OLD_PRICE_ROUND')},0)*${cfgRef_('OLD_PRICE_ROUND')}+${cfgRef_('OLD_PRICE_ADD')})`;
   F['min_price, ₽'] = `=IF(ISNUMBER(${c('Мин. цена, ₽')}),${c('Мин. цена, ₽')},"")`;
@@ -2199,7 +2215,7 @@ function styleMain_(sh, h, W) {
   MAIN_PCT.forEach(n => colRange(n).setNumberFormat('0.0%'));
   MAIN_MONEY.forEach(n => colRange(n).setNumberFormat('#,##0'));
   colRange('Остаток FBS').setNumberFormat('#,##0');
-  ['Название', 'Категория', 'Поставщик', 'Источник закупа', 'Артикул', 'Результат', 'Статус', 'Позиция']
+  ['Название', 'Категория', 'Поставщик', 'Источник закупа', 'Артикул', 'Результат', 'Статус', 'Позиция на Ozon']
     .forEach(n => colRange(n).setHorizontalAlignment('left'));
   paintColumns_(sh, h);
   colRange('Результат').setFontColor(OZ_UI.muted).setFontSize(9);
@@ -2207,7 +2223,7 @@ function styleMain_(sh, h, W) {
 
   // подсветка: фон только у «Статуса», дальше — цвет текста
   const stL = '$' + letter_(h.indexOf('Статус') + 1) + MAIN_FIRST;
-  const posL = '$' + letter_(h.indexOf('Позиция') + 1) + MAIN_FIRST;
+  const posL = '$' + letter_(h.indexOf('Позиция на Ozon') + 1) + MAIN_FIRST;
   const stkL = '$' + letter_(h.indexOf('Остаток FBS') + 1) + MAIN_FIRST;
   const rule = (formula, ranges, bg, fc, bold, italic) => {
     let b = SpreadsheetApp.newConditionalFormatRule().whenFormulaSatisfied(formula).setRanges(ranges);
@@ -2231,8 +2247,8 @@ function styleMain_(sh, h, W) {
     rule(fx_(`=LEFT(${stL},1)="⚠"`), st, OZ_UI.warn, OZ_UI.warnText, true),
     rule(fx_(`=LEFT(${stL},1)="✓"`), st, OZ_UI.good, OZ_UI.goodText),
     rule(fx_(`=LEFT(${stL},1)="❔"`), st, null, OZ_UI.muted),
-    rule(fx_(`=LEFT(${posL},1)="▲"`), [colRange('Позиция')], null, OZ_UI.badText),
-    rule(fx_(`=LEFT(${posL},1)="✓"`), [colRange('Позиция')], null, OZ_UI.goodText),
+    rule(fx_(`=LEFT(${posL},1)="▲"`), [colRange('Позиция на Ozon')], null, OZ_UI.badText),
+    rule(fx_(`=LEFT(${posL},1)="✓"`), [colRange('Позиция на Ozon')], null, OZ_UI.goodText),
     // товары без остатка — вся строка серая
     rule(fx_(`=AND(${notBlock},N(${stkL})=0)`), wholeRow, '#DDE1E6', '#6B7075', false, true)
   ]);
@@ -2361,14 +2377,12 @@ function ensureSheets_() {
   dropColumns_(SHEETS.TARIFFS, DROP_COLS['Тарифы'], 1);
   ensure(SHEETS.TARIFFS, TARIFF_COLS);
   ensure('План-факт', PF_COLS);
-  ensure(SHEETS.DISCOUNTS, DISCOUNT_COLS);
   ensure(SHEETS.SOURCES, SOURCE_COLS);
   const srcNote = ensureSources_();
   ensure(SHEETS.LOG, ['Время', 'Операция', 'Уровень', 'Сообщение']);
   dropColumns_('План-факт', DROP_COLS['План-факт'], 1);
   ensure('План-факт', PF_COLS);
   ensureFormulaRow_('План-факт', PF_COLS, pfFormulas_(2));
-  ensureFormulaRow_(SHEETS.DISCOUNTS, DISCOUNT_COLS, discountFormulas_(2));
   formatPlanFact_();
   return (made.length ? 'созданы ' + made.join(', ') : 'все на месте') + ' | источники: ' + srcNote;
 }
@@ -2423,15 +2437,7 @@ function pfFormulas_(r) {
   };
 }
 
-function discountFormulas_(r) {
-  const C = n => '$' + letter_(DISCOUNT_COLS.indexOf(n) + 1) + r;
-  const mc = n => '$' + letter_(MAIN_COLS.indexOf(n) + 1);
-  const oz = n => `INDEX(Ozon!${mc(n)}:${mc(n)},MATCH(${C('Артикул')},Ozon!$A:$A,0))`;
-  return {
-    'Порог акций, ₽': `=IFERROR(${oz('Порог акций, ₽')},"")`,
-    'Рекомендация': `=IF(AND(${C('Статус')}<>"NEW",${C('Статус')}<>"SEEN"),"— обработана",IF(NOT(ISNUMBER(${C('Порог акций, ₽')})),"❔ нет порога",IF(${C('Запрошенная цена')}>=${C('Порог акций, ₽')},"✓ можно одобрить","✗ ниже порога")))`
-  };
-}
+
 
 
 /* ================== 09_audit.gs ================== */

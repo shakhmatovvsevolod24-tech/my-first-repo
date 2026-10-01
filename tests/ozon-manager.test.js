@@ -456,3 +456,26 @@ test('«Обновить структуру» не стирает первую �
   assert.equal(sh.cell(2, 3), 1069445);
   assert.equal(sh.cell(2, 2), '=NEW()');
 });
+
+test('демпинг: ниже закупа, ниже безубыточности, большой разрыв', () => {
+  const { ctx } = load();
+  const v = (...a) => { const r = ctx.dumpingVerdict_(...a); return r && plain(r); };
+  assert.deepEqual(v(3269, 115, 829, 100, 0.2), [0, '⛔ ниже нашего закупа']);
+  assert.deepEqual(v(3269, 115, 829, 502, 0.2), [1, '⚠ ниже нашей безубыточности']);
+  assert.deepEqual(v(1000, 100, 300, 500, 0.2), [2, '▲ дешевле нас на 100%']);
+  assert.equal(v(1000, 100, 300, 900, 0.2), null);
+  assert.equal(v(3269, 115, 829, 0, 0.2, 234), null, 'другие площадки ниже безубыточности, но выше закупа — не демпинг');
+  assert.deepEqual(v(3269, 115, 829, 0, 0.2, 100), [0, '⛔ ниже нашего закупа']);
+});
+
+test('AN/AO: разница только с Ozon и по цене для покупателя', () => {
+  const { ctx } = load();
+  const F = ctx.mainFormulas_(vm.runInContext('MAIN_COLS', ctx), 3);
+  assert.ok(!F['Разница с Ozon'].includes('Другие'), F['Разница с Ozon']);
+  const cols = vm.runInContext('MAIN_COLS', ctx);
+  const col = n => '$' + ctx.letter_(cols.indexOf(n) + 1) + '3';
+  assert.ok(F['Разница с Ozon'].includes(col('Мин. цена в акциях, ₽')));
+  assert.ok(!F['Разница с Ozon'].includes(col('Другие площадки, ₽')));
+  assert.equal(cols.indexOf('Разница с Ozon') + 1, 40, 'колонка AN');
+  assert.equal(cols.indexOf('Позиция на Ozon') + 1, 41, 'колонка AO');
+});
