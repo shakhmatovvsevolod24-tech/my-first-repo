@@ -439,3 +439,20 @@ test('ABC: группы по прибыли, убыточные отдельно
   const g = ctx.abcGroups_([{ key: 'a', p: 70 }, { key: 'b', p: 20 }, { key: 'c', p: 7 }, { key: 'd', p: 3 }, { key: 'e', p: -5 }], 'p');
   assert.deepEqual(plain(['a', 'b', 'c', 'd', 'e'].map(k => g[k].g)), ['A', 'A', 'B', 'C', 'C ⛔']);
 });
+
+test('«Обновить структуру» не стирает первую строку данных «План-факта»', () => {
+  const { ctx } = load();
+  const sh = new Sheet([['SKU', 'Артикул', 'Выручка, ₽'], [1272218530, '=OLD()', 1069445], [2, '', 5]]);
+  sh.getMaxColumns = () => 4;
+  sh.setFontFamily = () => sh;
+  const origRange = sh.getRange.bind(sh);
+  sh.getRange = (...a) => { const r = origRange(...a); r.setFontFamily = () => r; r.setFontSize = () => r;
+    r.clearContent = () => { r.setValues(r.getValues().map(x => x.map(() => ''))); return r; };
+    r.setFormula = f => { r.setValue(f); return r; };
+    r.getFormulasR1C1 = () => r.getFormulas(); return r; };
+  ctx.sheet_ = () => sh;
+  ctx.ensureFormulaRow_('План-факт', ['SKU', 'Артикул', 'Выручка, ₽'], { 'Артикул': '=NEW()' });
+  assert.equal(sh.cell(2, 1), 1272218530);
+  assert.equal(sh.cell(2, 3), 1069445);
+  assert.equal(sh.cell(2, 2), '=NEW()');
+});

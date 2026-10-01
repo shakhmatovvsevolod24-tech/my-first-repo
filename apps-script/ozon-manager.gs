@@ -2390,8 +2390,11 @@ function formatPlanFact_() {
 /** Строка 2 служит шаблоном формул для writeTable_ */
 function ensureFormulaRow_(name, cols, F) {
   const sh = sheet_(name);
-  // чистим строку целиком: после добавления колонок старые формулы съезжают и дают #ERROR!
-  sh.getRange(2, 1, 1, Math.max(sh.getMaxColumns(), cols.length)).clearContent().clearFormat();
+  // строка 2 — это первая строка данных (товар или заявка), а не пустой шаблон: значения в ней не трогаем.
+  // Пишем формулы в колонки-формулы, а съехавшие старые формулы в остальных колонках убираем
+  const width = Math.max(sh.getMaxColumns(), cols.length);
+  const old = sh.getRange(2, 1, 1, width).getFormulas()[0];
+  old.forEach((f, j) => { if (f && (j >= cols.length || !F[cols[j]])) sh.getRange(2, j + 1).clearContent(); });
   sh.getRange(2, 1, 1, cols.length).setFontFamily(OZ_UI.font).setFontSize(OZ_UI.size);
   Object.keys(F).forEach(n => sh.getRange(2, cols.indexOf(n) + 1).setFormula(fx_(F[n])));
   PropertiesService.getDocumentProperties().deleteProperty('TPL_' + name);
