@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-4 -54 528 528" width="512" height="512">
+  <!-- Голова кота в профиль; внутри силуэта — закатный пейзаж с фото, солнце служит глазом -->
+  <defs>
+    <path id="head" d="M70 212
+      C70 180 82 150 104 126
+      C126 104 156 92 188 88
+      L222 16 L274 84
+      C288 82 300 82 312 86
+      L380 24 L392 120
+      C438 142 468 182 476 228
+      L458 250 L490 270 L456 282 L484 312 L446 312 L464 346 L422 336 L430 376 L390 352 L380 390 L346 358 L320 388 L302 354
+      C250 356 204 342 170 318
+      C146 304 124 292 110 278
+      L140 262 L94 256
+      C78 248 70 232 70 212 Z"/>
+    <clipPath id="clip"><use href="#head"/></clipPath>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5b3f8f"/>
+      <stop offset="0.45" stop-color="#d9708d"/>
+      <stop offset="0.8" stop-color="#f6a96b"/>
+    </linearGradient>
+    <linearGradient id="river" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7cfa0"/>
+      <stop offset="1" stop-color="#e98a7c"/>
+    </linearGradient>
+  </defs>
+
+  <!-- внешняя тёмная обводка -->
+  <use href="#head" fill="#0d2a1c" stroke="#0d2a1c" stroke-width="26" stroke-linejoin="round"/>
+
+  <g clip-path="url(#clip)">
+    <rect x="0" y="0" width="520" height="420" fill="url(#sky)"/>
+    <!-- лучи заката -->
+    <g fill="#ffd9a0" opacity="0.25">
+      <path d="M140 172 L520 60 L520 110 Z"/>
+      <path d="M140 172 L520 170 L520 214 Z"/>
+    </g>
+
+    <!-- дальние «кубические» холмы -->
+    <path d="M0 236 h60 v-10 h50 v-14 h40 v8 h60 v-18 h56 v10 h44 v-16 h50 v12 h44 v-10 h60 V420 H0 Z" fill="#6f8f3a"/>
+    <path d="M0 262 h40 v-8 h70 v12 h60 v-16 h70 v10 h60 v-14 h60 v12 h80 v-10 h70 V420 H0 Z" fill="#3f6b24"/>
+
+    <!-- пиксельные деревья -->
+    <g fill="#1e4a1c">
+      <path d="M214 212 h36 v-12 h12 v-24 h-12 v-12 h-36 v12 h-12 v24 h12 Z"/>
+      <path d="M300 226 h44 v-14 h14 v-30 h-14 v-14 h-44 v14 h-14 v30 h14 Z"/>
+      <path d="M392 214 h36 v-12 h12 v-26 h-12 v-12 h-36 v12 h-12 v26 h12 Z"/>
+      <path d="M434 250 h40 v-14 h12 v-28 h-12 v-12 h-40 v12 h-12 v28 h12 Z"/>
+    </g>
+    <g fill="#5a3418">
+      <rect x="226" y="212" width="12" height="40"/>
+      <rect x="316" y="226" width="12" height="30"/>
+      <rect x="404" y="214" width="12" height="40"/>
+      <rect x="448" y="250" width="12" height="20"/>
+    </g>
+    <!-- ближний план -->
+    <path d="M0 300 h70 v-10 h80 v12 h70 v-14 h80 v10 h70 v-12 h150 V420 H0 Z" fill="#2c5a1c"/>
+
+    <!-- река: вытекает из «пасти» и уходит к шее -->
+    <path d="M136 262
+             C180 272 214 280 252 296
+             C296 314 330 336 352 372
+             L404 420 L300 420
+             C292 380 266 350 226 326
+             C190 306 150 290 108 270 Z" fill="url(#river)"/>
+    <path d="M196 290 C226 300 250 312 270 328 M262 344 C282 358 296 376 304 396" stroke="#fff3df" stroke-width="4" fill="none" stroke-linecap="round" opacity="0.8"/>
+
+    <!-- солнце-глаз с вертикальным зрачком -->
+    <circle cx="160" cy="166" r="34" fill="#ffb31a"/>
+    <circle cx="160" cy="166" r="28" fill="#ffd34d"/>
+    <ellipse cx="164" cy="166" rx="7" ry="22" fill="#120a04"/>
+    <circle cx="152" cy="154" r="5" fill="#ffffff"/>
+
+    <!-- розовая мочка носа -->
+    <path d="M62 200 L88 196 L84 222 Z" fill="#e88a8e"/>
+    <!-- внутренняя часть ушей -->
+    <path d="M222 48 L252 92 L204 100 Z" fill="#f0b4a8" opacity="0.85"/>
+    <path d="M368 52 L378 118 L322 98 Z" fill="#f0b4a8" opacity="0.85"/>
+  </g>
+
+  <!-- светлый кант -->
+  <use href="#head" fill="none" stroke="#f1e6cc" stroke-width="10" stroke-linejoin="round"/>
+
+  <!-- нос -->
+  <path d="M54 202 Q68 190 88 198 Q82 214 70 220 Q58 214 54 202 Z" fill="#e88a8e" stroke="#0d2a1c" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- усы -->
+  <g stroke-linecap="round" fill="none">
+    <path d="M110 236 C80 226 46 222 8 226" stroke="#0d2a1c" stroke-width="11"/>
+    <path d="M110 236 C80 226 46 222 8 226" stroke="#f1e6cc" stroke-width="5"/>
+    <path d="M112 246 C82 246 50 252 16 264" stroke="#0d2a1c" stroke-width="11"/>
+    <path d="M112 246 C82 246 50 252 16 264" stroke="#f1e6cc" stroke-width="5"/>
+  </g>
+</svg>
