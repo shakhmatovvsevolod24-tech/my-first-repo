@@ -384,15 +384,12 @@ function syncTariffs_() {
   const now = new Date();
   writeTable_(SHEETS.TARIFFS, items.map(o => {
     const p = o.price || {}, c = o.commissions || {}, ix = o.price_indexes || {};
-    const acts = (o.marketing_actions && o.marketing_actions.actions) || [];
-    const card = acts.find(a => /ozon\s*карт/i.test(a.title || ''));
     return {
       'product_id': o.product_id, 'Артикул': String(o.offer_id),
       'Цена': num_(p.price), 'Цена до скидки': num_(p.old_price), 'Мин. цена': num_(p.min_price),
       'Комиссия FBS, %': c.sales_percent_fbs,
       'Логистика FBS мин, ₽': c.fbs_direct_flow_trans_min_amount, 'Логистика FBS макс, ₽': c.fbs_direct_flow_trans_max_amount,
       'Обработка FBS, ₽': c.fbs_first_mile_max_amount, 'Последняя миля FBS, ₽': c.fbs_deliv_to_customer_amount,
-      'Скидка Ozon-карта, %': card ? num_(card.value) : 0,
       'Мин. цена конкурента на Ozon': minOf(ix.ozon_index_data),
       'Мин. цена на других площадках': minOf(ix.external_index_data),
       'Индекс цены': ix.color_index || ix.price_index || '', 'Обновлено': now,
@@ -668,7 +665,7 @@ function patchBogResult_(sh, res, last) {
 
 function distributeBestActions()  { run_('Распределить по лучшим акциям', distributeBestActions_); }
 
-var BOG_FIRST = 3, BOG_ACT_COL = 26;   // данные с 3-й строки, акции с колонки Z
+var BOG_FIRST = 3, BOG_ACT_COL = 25;   // данные с 3-й строки, акции с колонки Y
 var MAXSHEET = 'Акции_макс';           // скрытый лист: макс. цены участия по каждой акции
 var BOG = { PID: 1, PRICE: 7, FLOOR: 9, IN_ACTION: 10, MAX: 11, PROFIT: 13, MARGIN: 14,
               STATUS: 16, PASS: 17, ACTION: 18, RESULT: 19 };
@@ -720,6 +717,9 @@ function floorIn_(t, manual, actionId, pid) {
 /* ---------- Перестроить матрицу ---------- */
 function refreshActions_() {
   const sh = sheet_(SHEETS.BOG), acts = listActions_(), main = readMain_();
+  // колонку «Ozon-карта» больше не ведём — удаляем со старых листов один раз
+  const oldCard = headersAt_(sh, 2).indexOf('Ozon-карта');
+  if (oldCard >= 0 && oldCard < BOG_ACT_COL) sh.deleteColumn(oldCard + 1);
   const prods = main.rows.filter(r => Number(r['Product ID']) > 0);
   const sel = acts.find(a => String(a.title).trim() === selectedTitle_()) || acts[0];
 
@@ -778,17 +778,16 @@ function refreshActions_() {
     10: `=IFERROR(IF(${inAct}="","",${inAct}),"")`,
     11: `=IFERROR(IF(${maxVal}="","",${maxVal}),"")`,
     12: `=IF(OR(NOT(ISNUMBER(${P})),NOT(ISNUMBER($G${R}))),"",1-${P}/$G${R})`,
-    13: `=IF(OR(NOT(ISNUMBER(${P})),$X${R}=""),"",ROUND(${P}*(1-$W${R})-${P}*$V${R}-$X${R},0))`,
-    14: `=IF(OR($M${R}="",NOT(ISNUMBER(${P}))),"",$M${R}/(${P}*(1-$W${R})))`,
-    15: `=IF(OR($M${R}="",$Y${R}=""),"",$Y${R}-$M${R})`,
+    13: `=IF(OR(NOT(ISNUMBER(${P})),$W${R}=""),"",ROUND(${P}-${P}*$V${R}-$W${R},0))`,
+    14: `=IF(OR($M${R}="",NOT(ISNUMBER(${P}))),"",$M${R}/${P})`,
+    15: `=IF(OR($M${R}="",$X${R}=""),"",$X${R}-$M${R})`,
     16: `=IF(ISNUMBER($J${R}),"Участвует",IF(ISNUMBER($K${R}),"Кандидат","Нет в акции"))`,
     17: `=IF(NOT(ISNUMBER($I${R})),"❔ нет закупа",IF(NOT(ISNUMBER(${P})),"—",IF(${P}>=$I${R},"✓ проходит","✗ ниже порога")))`,
     20: `=COUNT($${actFrom}${R}:$${actTo}${R})`,
     21: `=IF(NOT(ISNUMBER($I${R})),"",COUNTIF($${actFrom}${R}:$${actTo}${R},"<"&$I${R}))`,
     22: `=IFERROR(${idx('Комиссия, %')}+${idx('Эквайринг, %')},"")`,
-    23: `=IFERROR(${idx('Ozon-карта, %')},0)`,
-    24: nm('Затраты фикс., ₽'),
-    25: `=IF(OR(NOT(ISNUMBER($G${R})),$X${R}=""),"",ROUND($G${R}*(1-$W${R})-$G${R}*$V${R}-$X${R},0))`
+    23: nm('Затраты фикс., ₽'),
+    24: `=IF(OR(NOT(ISNUMBER($G${R})),$W${R}=""),"",ROUND($G${R}-$G${R}*$V${R}-$W${R},0))`
   };
   Object.keys(F).forEach(col => {
     if (!F[col]) return;
@@ -809,7 +808,7 @@ function refreshActions_() {
   highlightBogKeyCols_(sh, n);
   if (sh.getFilter()) sh.getFilter().remove();
   sh.getRange(2, 1, n + 1, lastAct).createFilter();
-  if (na > 52) log_('Бог акций', 'WARN', 'Акций больше 52: расширьте диапазон Z:BZ в формуле «Мин. цена в акциях» листа Ozon');
+  if (na > 60) log_('Бог акций', 'WARN', 'Акций больше 60: в формуле «Мин. цена в акциях» листа Ozon учтены только первые 60');
   return `акций: ${na}, товаров: ${n}, выбрана: ${sel ? sel.title : '—'}`;
 }
 
@@ -1229,7 +1228,6 @@ function explainProduct_() {
 
   const cost = Number(r['Закуп, ₽']) || 0;
   const comm = (Number(t['Комиссия FBS, %']) || 0) / 100;
-  const card = (Number(t['Скидка Ozon-карта, %']) || 0) / 100;
   const lmin = Number(t['Логистика FBS мин, ₽']) || 0, lmax = Number(t['Логистика FBS макс, ₽']) || 0;
   const logi = logMode === 'MIN' ? lmin : logMode === 'AVG' ? (lmin + lmax) / 2 : lmax;
   const proc = Number(t['Обработка FBS, ₽']) || 0, last = Number(t['Последняя миля FBS, ₽']) || 0;
@@ -1242,7 +1240,7 @@ function explainProduct_() {
   const sale = Number(r['Цена продажи, ₽']) || 0;
   const actionPrice = Number(r['Мин. цена в акциях, ₽']) || 0;
   const effective = (actionPrice > 0 && actionPrice < sale) ? actionPrice : sale;
-  const marginAt = p => p > 0 ? (p * (1 - card) - p * (comm + acq) - fix) / (p * (1 - card)) : 0;
+  const marginAt = p => p > 0 ? (p - p * (comm + acq) - fix) / p : 0;
   const pc = x => Math.round(x * 1000) / 10 + '%';
 
   const txt = [
@@ -1250,7 +1248,7 @@ function explainProduct_() {
     `Закуп: ${Math.round(cost)} ₽`,
     `Логистика ${Math.round(logi)} + обработка ${proc} + последняя миля ${last}, возврат ${ret}, выкуп ${pc(buy)} → доставка на проданную штуку ${Math.round(delivery)} ₽`,
     `Упаковка: ${pack} ₽ → всего постоянных затрат ${Math.round(fix)} ₽`,
-    `Комиссия ${pc(comm)}, эквайринг ${pc(acq)}, скидка Ozon-карта ${pc(card)}`,
+    `Комиссия ${pc(comm)}, эквайринг ${pc(acq)}`,
     `Цена под маржу ${pc(promo)}: ${Math.round(target)} ₽`,
     `Цена продажи сейчас: ${Math.round(sale)} ₽ → маржа ${pc(marginAt(sale))}`,
     actionPrice ? `Цена в акции: ${Math.round(actionPrice)} ₽ → маржа ${pc(marginAt(actionPrice))}` : 'В акциях не участвует',
@@ -1315,7 +1313,6 @@ function priceForMargin_(row, t, margin, acq, pack, defBuyout, logMode) {
   const cost = Number(row['Закуп, ₽']);
   if (!(cost > 0) || !t) return 0;
   const comm = (Number(t['Комиссия FBS, %']) || 0) / 100;
-  const card = (Number(t['Скидка Ozon-карта, %']) || 0) / 100;
   const lmin = Number(t['Логистика FBS мин, ₽']) || 0, lmax = Number(t['Логистика FBS макс, ₽']) || 0;
   const logi = logMode === 'MIN' ? lmin : logMode === 'AVG' ? (lmin + lmax) / 2 : lmax;
   const proc = Number(t['Обработка FBS, ₽']) || 0, last = Number(t['Последняя миля FBS, ₽']) || 0;
@@ -1323,7 +1320,7 @@ function priceForMargin_(row, t, margin, acq, pack, defBuyout, logMode) {
   const buy = Number(row['Выкуп, %']) || defBuyout;
   const delivery = (logi + proc + last) / buy + (1 / buy - 1) * ret;
   const fix = cost + delivery + pack;
-  const den = (1 - card) * (1 - margin) - comm - acq;
+  const den = 1 - margin - comm - acq;
   return den > 0 ? fix / den : 0;
 }
 
@@ -1466,20 +1463,21 @@ function onOpen() {
 
   ui.createMenu('💰 ЦЕНЫ')
     .addItem(`Выгрузить цены по марже ${promo}`, 'pricePromoAndUpload')
-    .addItem('Выгрузить цены, заполненные вручную', 'uploadManualPrices')
-    .addItem('Отправить отмеченные галочкой', 'uploadPrices')
-    .addSeparator()
     .addItem(`Посчитать цены по марже ${promo} (без отправки)`, 'setPricesToPromoMargin')
-    .addItem('Разобрать расчёт по товару', 'explainProduct')
+    .addSubMenu(ui.createMenu('Отправить в Ozon')
+      .addItem('Отмеченные галочкой', 'uploadPrices')
+      .addItem('Заполненные вручную', 'uploadManualPrices'))
     .addSeparator()
-    .addItem('Обновить тарифы и цены Ozon', 'syncTariffs')
-    .addItem('Обновить закуп', 'importCosts')
-    .addItem('Источники закупа из старой таблицы', 'sourcesFromOldTable')
-    .addItem('Добавить новые товары из Ozon', 'addMissingProducts')
-    .addSeparator()
-    .addItem('Аудит: сверить расчёт с Ozon', 'runAudit')
-    .addItem('План-факт по финотчёту', 'syncFinance')
-    .addItem('Выкуп и возвраты', 'syncBuyout')
+    .addSubMenu(ui.createMenu('Обновить данные')
+      .addItem('Тарифы и цены Ozon', 'syncTariffs')
+      .addItem('Закуп', 'importCosts')
+      .addItem('Новые товары из Ozon', 'addMissingProducts')
+      .addItem('Источники закупа из старой таблицы', 'sourcesFromOldTable'))
+    .addSubMenu(ui.createMenu('Отчёты')
+      .addItem('Разобрать расчёт по товару', 'explainProduct')
+      .addItem('Аудит: сверить расчёт с Ozon', 'runAudit')
+      .addItem('План-факт по финотчёту', 'syncFinance')
+      .addItem('Выкуп и возвраты', 'syncBuyout'))
     .addToUi();
 
   ui.createMenu('🏷 АКЦИИ')
@@ -1489,39 +1487,46 @@ function onOpen() {
     .addItem(`Применить отметки с маржой от ${min}`, 'applySelectedMin')
     .addItem('Удалить из акции выделенные и отмеченные', 'removeMarkedFromAction')
     .addSeparator()
-    .addItem('Добавить все подходящие по марже', 'addEligibleToAll')
-    .addItem('Убрать неподходящие по марже', 'removeIneligible')
-    .addItem('Распределить по самым выгодным акциям', 'distributeBestActions')
-    .addSeparator()
-    .addItem('Заявки на скидку: загрузить', 'loadDiscountTasks')
-    .addItem('Заявки на скидку: решить автоматически', 'autoDecideDiscounts')
-    .addItem('Заявки на скидку: применить мои решения', 'processDiscountDecisions')
+    .addSubMenu(ui.createMenu('Массово по всем акциям')
+      .addItem('Добавить все подходящие по марже', 'addEligibleToAll')
+      .addItem('Убрать неподходящие по марже', 'removeIneligible')
+      .addItem('Распределить по самым выгодным акциям', 'distributeBestActions'))
+    .addSubMenu(ui.createMenu('Заявки на скидку')
+      .addItem('Загрузить', 'loadDiscountTasks')
+      .addItem('Решить автоматически', 'autoDecideDiscounts')
+      .addItem('Применить мои решения', 'processDiscountDecisions'))
     .addToUi();
 
   ui.createMenu('📦 ОСТАТКИ')
     .addItem('Обновить остатки сейчас', 'syncStocks')
-    .addSeparator()
-    .addItem(`Включить автообновление (каждые ${stockMin} мин)`, 'installStockTrigger')
-    .addItem('Выключить автообновление', 'stopStockTrigger')
-    .addSeparator()
+    .addSubMenu(ui.createMenu('Автообновление')
+      .addItem(`Включить автообновление (каждые ${stockMin} мин)`, 'installStockTrigger')
+      .addItem('Выключить автообновление', 'stopStockTrigger'))
     .addItem('Вернуть остатки, обнулённые аудитом', 'restoreStocks')
     .addToUi();
 
   ui.createMenu('⚙ НАСТРОЙКИ')
     .addItem('▶ Обновить все данные', 'syncAll')
-    .addSeparator()
-    .addItem('Ключи API', 'setupCredentials')
-    .addItem('Проверить подключение', 'testConnection')
     .addItem('Режим проверки (вкл/выкл)', 'toggleDryRun')
-    .addItem('Обновить структуру таблицы', 'applySchema')
+    .addItem('Скрыть / показать служебные колонки', 'toggleView')
     .addSeparator()
-    .addItem('Компактный вид', 'compactView')
-    .addItem('Показать все колонки', 'fullView')
-    .addSeparator()
-    .addItem('Ночное обновление акций (00:05 и 01:00 МСК)', 'installActionTriggers')
-    .addItem('Ежедневное обновление (6:00)', 'installDailyTrigger')
-    .addItem('Выключить все автозапуски', 'removeAllTriggers')
+    .addSubMenu(ui.createMenu('Подключение и структура')
+      .addItem('Ключи API', 'setupCredentials')
+      .addItem('Проверить подключение', 'testConnection')
+      .addItem('Обновить структуру таблицы', 'applySchema'))
+    .addSubMenu(ui.createMenu('Автозапуски')
+      .addItem('Ночное обновление акций (00:05 и 01:00 МСК)', 'installActionTriggers')
+      .addItem('Ежедневное обновление (6:00)', 'installDailyTrigger')
+      .addItem('Выключить все автозапуски', 'removeAllTriggers'))
     .addToUi();
+}
+
+/** Одна кнопка вместо двух: прячет служебные колонки, если они видны, и показывает, если спрятаны */
+function toggleView() {
+  const sh = sheet_(SHEETS.MAIN), h = headersAt_(sh, MAIN_HDR_ROW);
+  const i = MAIN_HIDE.map(n => h.indexOf(n)).find(x => x >= 0);
+  const hidden = i !== undefined && sh.isColumnHiddenByUser(i + 1);
+  run_(hidden ? 'Показать все колонки' : 'Компактный вид', () => toggleColumns_(!hidden));
 }
 
 /** Режим проверки DRY_RUN: показывает, что включено сейчас, и переключает после подтверждения */
@@ -1896,7 +1901,7 @@ var OZ_UI = {
 /* ---------- Списки колонок вспомогательных листов ---------- */
 var TARIFF_COLS = ['product_id', 'Артикул', 'Цена', 'Цена до скидки', 'Мин. цена', 'Комиссия FBS, %',
   'Логистика FBS мин, ₽', 'Логистика FBS макс, ₽', 'Обработка FBS, ₽', 'Последняя миля FBS, ₽',
-  'Скидка Ozon-карта, %', 'Мин. цена конкурента на Ozon', 'Мин. цена на других площадках', 'Индекс цены',
+  'Мин. цена конкурента на Ozon', 'Мин. цена на других площадках', 'Индекс цены',
   'Обновлено', 'Обработка возврата FBS, ₽', 'Обратная логистика FBS, ₽'];
 
 var PF_COLS = ['SKU', 'Артикул', 'Название', 'Категория', 'Продано, шт', 'Возвращено, шт', 'Выручка, ₽',
@@ -1913,7 +1918,7 @@ var SOURCE_COLS = ['Источник', 'ID таблицы', 'Лист', 'Кол�
 var MAIN_COLS = ['Артикул', 'SKU', 'Product ID', 'Код в прайсе', 'Название', 'Категория', 'Поставщик', 'Источник закупа',
   'Остаток FBS', 'Закуп, ₽', 'РРЦ, ₽', 'Комиссия, %', 'Логистика, ₽',
   'Обработка Ozon, ₽', 'Посл. миля, ₽', 'Выкуп, %', 'Выкуп: основа', 'Возврат, ₽', 'Логистика с выкупом, ₽',
-  'Упаковка, ₽', 'Эквайринг, %', 'Ozon-карта, %', 'Затраты фикс., ₽', 'Мин. цена, ₽', 'Порог акций, ₽',
+  'Упаковка, ₽', 'Эквайринг, %', 'Затраты фикс., ₽', 'Мин. цена, ₽', 'Порог акций, ₽',
   'Цена продажи, ₽', 'Цена вручную', 'Цена на Ozon, ₽', 'Мин. цена в акциях, ₽', 'В акции', 'Цена факт., ₽', 'Прибыль, ₽', 'Маржа, %',
   'Статус', 'Прибыль факт/шт, ₽', 'Маржа факт, %', 'Конкурент Ozon, ₽', 'Другие площадки, ₽',
   'Разница с рынком', 'Позиция', 'Отправить', 'Цена к отправке, ₽', 'Зачёркнутая, ₽', 'min_price, ₽', 'Результат'];
@@ -1952,7 +1957,7 @@ var SETTINGS_OBSOLETE = ['ALLOW_BELOW_MIN', 'OLD_TABLE_ID'];
 
 var MAIN_WIDTHS = { 'В акции': 60, 'Артикул': 150, 'Название': 300, 'Категория': 110, 'Поставщик': 100, 'Источник закупа': 120,
   'Статус': 105, 'Позиция': 100, 'Выкуп: основа': 110, 'Результат': 210 };
-var MAIN_PCT = ['Комиссия, %', 'Выкуп, %', 'Эквайринг, %', 'Ozon-карта, %', 'Маржа, %', 'Маржа факт, %', 'Разница с рынком'];
+var MAIN_PCT = ['Комиссия, %', 'Выкуп, %', 'Эквайринг, %', 'Маржа, %', 'Маржа факт, %', 'Разница с рынком'];
 var MAIN_MONEY = ['Закуп, ₽', 'РРЦ, ₽', 'Логистика, ₽', 'Обработка Ozon, ₽', 'Посл. миля, ₽', 'Возврат, ₽',
   'Логистика с выкупом, ₽', 'Упаковка, ₽', 'Затраты фикс., ₽', 'Мин. цена, ₽', 'Порог акций, ₽',
   'Цена продажи, ₽', 'Цена вручную', 'Цена на Ozon, ₽', 'Мин. цена в акциях, ₽', 'Цена факт., ₽', 'Прибыль, ₽',
@@ -1960,10 +1965,11 @@ var MAIN_MONEY = ['Закуп, ₽', 'РРЦ, ₽', 'Логистика, ₽', '
 var MAIN_INPUTS = ['Код в прайсе', 'Категория', 'Поставщик', 'Источник закупа', 'Цена продажи, ₽', 'Цена вручную', 'Отправить'];
 var MAIN_HIDE = ['SKU', 'Product ID', 'Код в прайсе', 'Поставщик', 'Источник закупа', 'РРЦ, ₽', 'Комиссия, %',
   'Логистика, ₽', 'Обработка Ozon, ₽', 'Посл. миля, ₽', 'Выкуп, %', 'Выкуп: основа', 'Возврат, ₽',
-  'Логистика с выкупом, ₽', 'Упаковка, ₽', 'Эквайринг, %', 'Ozon-карта, %', 'Мин. цена в акциях, ₽',
+  'Логистика с выкупом, ₽', 'Упаковка, ₽', 'Эквайринг, %', 'Мин. цена в акциях, ₽',
   'Конкурент Ozon, ₽', 'Другие площадки, ₽', 'Цена к отправке, ₽', 'Зачёркнутая, ₽', 'min_price, ₽'];
 // колонки, которые нужно удалить из листов при обновлении структуры
-var DROP_COLS = { 'Ozon': ['Комиссия факт, %', 'Δ комиссия, п.п.'], 'План-факт': ['Комиссия факт, %'] };
+var DROP_COLS = { 'Ozon': ['Комиссия факт, %', 'Δ комиссия, п.п.', 'Ozon-карта, %'], 'План-факт': ['Комиссия факт, %'],
+  'Тарифы': ['Скидка Ozon-карта, %'] };
 
 var MAIN_BANDS = [['Товар', 'Артикул', 'Остаток FBS'], ['Закуп', 'Закуп, ₽', 'РРЦ, ₽'],
   ['Расходы Ozon и свои', 'Комиссия, %', 'Затраты фикс., ₽'], ['Цены', 'Мин. цена, ₽', 'Цена факт., ₽'],
@@ -1987,7 +1993,7 @@ function mainFormulas_(h, r) {
   const B = `IF(N(${c('Выкуп, %')})>0,${c('Выкуп, %')},${cfgRef_('DEFAULT_BUYOUT')})`;
   const base = `IF(${c('Цена продажи, ₽')}="",${c('Цена на Ozon, ₽')},${c('Цена продажи, ₽')})`;
   const priceAt = m => {
-    const den = `((1-${c('Ozon-карта, %')})*(1-${m})-${c('Комиссия, %')}-${c('Эквайринг, %')})`;
+    const den = `(1-${m}-${c('Комиссия, %')}-${c('Эквайринг, %')})`;
     return `=IF(OR(${c('Затраты фикс., ₽')}="",${c('Комиссия, %')}=""),"",IF(${den}<=0,"нереально",ROUNDUP(${c('Затраты фикс., ₽')}/${den},0)))`;
   };
   const F = {};
@@ -1997,7 +2003,6 @@ function mainFormulas_(h, r) {
   F['Посл. миля, ₽'] = `=IFERROR(N(${t('Последняя миля FBS, ₽')}),0)`;
   F['Упаковка, ₽'] = `=${cfgRef_('PACKAGING_RUB')}`;
   F['Эквайринг, %'] = `=${cfgRef_('ACQUIRING_RATE')}`;
-  F['Ozon-карта, %'] = `=IFERROR(N(${t('Скидка Ozon-карта, %')})/100,0)`;
   F['Возврат, ₽'] = `=IFERROR(N(${t('Обработка возврата FBS, ₽')})+N(${t('Обратная логистика FBS, ₽')}),0)`;
   F['Логистика с выкупом, ₽'] = `=IF(${c('Логистика, ₽')}="","",ROUND((${c('Логистика, ₽')}+${c('Обработка Ozon, ₽')}+${c('Посл. миля, ₽')})/${B}+(1/${B}-1)*${c('Возврат, ₽')},0))`;
   F['Затраты фикс., ₽'] = `=IF(OR(NOT(ISNUMBER(${c('Закуп, ₽')})),${c('Логистика с выкупом, ₽')}=""),"",${c('Закуп, ₽')}+${c('Логистика с выкупом, ₽')}+${c('Упаковка, ₽')})`;
@@ -2010,8 +2015,8 @@ function mainFormulas_(h, r) {
   const act = c('Мин. цена в акциях, ₽');
   F['Цена факт., ₽'] = `=IF(NOT(ISNUMBER(${base})),"",IF(AND(ISNUMBER(${act}),N(${act})>0,N(${act})<${base}),${act},${base}))`;
   F['В акции'] = `=IF(N(${c('Мин. цена в акциях, ₽')})>0,"🟩","")`;
-  F['Прибыль, ₽'] = `=IF(OR(${c('Затраты фикс., ₽')}="",N(${c('Цена факт., ₽')})=0,${c('Комиссия, %')}=""),"",ROUND(${c('Цена факт., ₽')}*(1-${c('Ozon-карта, %')})-${c('Цена факт., ₽')}*(${c('Комиссия, %')}+${c('Эквайринг, %')})-${c('Затраты фикс., ₽')},0))`;
-  F['Маржа, %'] = `=IF(${c('Прибыль, ₽')}="","",${c('Прибыль, ₽')}/(${c('Цена факт., ₽')}*(1-${c('Ozon-карта, %')})))`;
+  F['Прибыль, ₽'] = `=IF(OR(${c('Затраты фикс., ₽')}="",N(${c('Цена факт., ₽')})=0,${c('Комиссия, %')}=""),"",ROUND(${c('Цена факт., ₽')}-${c('Цена факт., ₽')}*(${c('Комиссия, %')}+${c('Эквайринг, %')})-${c('Затраты фикс., ₽')},0))`;
+  F['Маржа, %'] = `=IF(${c('Прибыль, ₽')}="","",${c('Прибыль, ₽')}/${c('Цена факт., ₽')})`;
   // допуск 0,2 п.п.: цена округляется до рубля, и маржа может выйти 11,996% вместо 12%
   F['Статус'] = `=IF(NOT(ISNUMBER(${c('Закуп, ₽')})),"❔ нет закупа",IF(${c('Маржа, %')}="","❔ нет цены",IF(${c('Прибыль, ₽')}<0,"⛔ убыток",IF(${c('Маржа, %')}<${cfgRef_('MIN_MARGIN')}-2/1000,"⚠ ниже мин.","✓ норма"))))`;
   F['Прибыль факт/шт, ₽'] = `=IFERROR(IF(${pf('Прибыль факт/шт, ₽')}="","",${pf('Прибыль факт/шт, ₽')}),"")`;
@@ -2197,7 +2202,7 @@ function toggleColumns_(hide) {
     n++;
   });
   const bog = SpreadsheetApp.getActive().getSheetByName(SHEETS.BOG);
-  if (bog) for (let c = 22; c <= 25; c++) { if (hide) bog.hideColumns(c); else bog.showColumns(c); }
+  if (bog) for (let c = 22; c <= 24; c++) { if (hide) bog.hideColumns(c); else bog.showColumns(c); }
   return `${hide ? 'скрыто' : 'показано'} колонок: ${n}`;
 }
 
@@ -2279,6 +2284,7 @@ function ensureSheets_() {
     }
     return sh;
   };
+  dropColumns_(SHEETS.TARIFFS, DROP_COLS['Тарифы'], 1);
   ensure(SHEETS.TARIFFS, TARIFF_COLS);
   ensure('План-факт', PF_COLS);
   ensure(SHEETS.DISCOUNTS, DISCOUNT_COLS);
@@ -2329,7 +2335,7 @@ function pfFormulas_(r) {
     'Название': `=IFERROR(${oz('Название')}&"","")`,
     'Категория': `=IFERROR(${oz('Категория')}&"","")`,
     'Удержания факт, %': `=IF(N(${C('Выручка, ₽')})<=0,"",-(${C('Комиссия, ₽')}+${C('Логистика и услуги, ₽')}+${C('Возвраты, ₽')}+${C('Реклама, ₽')}+${C('Штрафы, ₽')}+${C('Прочее, ₽')})/${C('Выручка, ₽')})`,
-    'Удержания план, %': `=IFERROR((${oz('Цена факт., ₽')}*(${oz('Комиссия, %')}+${oz('Эквайринг, %')})+${oz('Логистика с выкупом, ₽')})/(${oz('Цена факт., ₽')}*(1-${oz('Ozon-карта, %')})),"")`,
+    'Удержания план, %': `=IFERROR((${oz('Цена факт., ₽')}*(${oz('Комиссия, %')}+${oz('Эквайринг, %')})+${oz('Логистика с выкупом, ₽')})/${oz('Цена факт., ₽')},"")`,
     'Разница, п.п.': `=IF(OR(${C('Удержания факт, %')}="",${C('Удержания план, %')}=""),"",${C('Удержания факт, %')}-${C('Удержания план, %')})`,
     'Закуп проданного, ₽': `=IFERROR(${oz('Закуп, ₽')}*${net},"")`,
     'Прибыль факт, ₽': `=IF(OR(${C('К выплате, ₽')}="",${C('Закуп проданного, ₽')}=""),"",ROUND(${C('К выплате, ₽')}-${C('Закуп проданного, ₽')}-${cfgRef_('PACKAGING_RUB')}*${net},0))`,
@@ -2403,14 +2409,11 @@ function runAudit_() {
   ozonAll_('/v5/product/info/prices', { filter: { visibility: 'ALL' }, limit: 1000 },
     r => ({ items: r.items, next: r.cursor }), 'cursor').forEach(o => {
       const p = o.price || {}, c = o.commissions || {};
-      const acts = (o.marketing_actions && o.marketing_actions.actions) || [];
-      const card = acts.find(a => /ozon\s*карт/i.test(a.title || ''));
       live[key_(o.product_id)] = {
         price: num_(p.price) || 0, comm: (num_(c.sales_percent_fbs) || 0) / 100,
         logMin: num_(c.fbs_direct_flow_trans_min_amount) || 0, logMax: num_(c.fbs_direct_flow_trans_max_amount) || 0,
         proc: num_(c.fbs_first_mile_max_amount) || 0, last: num_(c.fbs_deliv_to_customer_amount) || 0,
-        ret: (num_(c.fbs_return_flow_amount) || 0) + (num_(c.fbs_return_flow_trans_max_amount) || 0),
-        card: card ? (num_(card.value) || 0) / 100 : 0
+        ret: (num_(c.fbs_return_flow_amount) || 0) + (num_(c.fbs_return_flow_trans_max_amount) || 0)
       };
     });
 
@@ -2448,7 +2451,7 @@ function runAudit_() {
     const delivery = (logi + L.proc + L.last) / buy + (1 / buy - 1) * L.ret;
     const fix = cost + delivery + pack;
     const priceNow = Math.min(L.price || Infinity, actMin[pid] || Infinity);
-    const revenue = priceNow === Infinity ? 0 : priceNow * (1 - L.card);
+    const revenue = priceNow === Infinity ? 0 : priceNow;
     const profit = revenue ? Math.round(revenue - priceNow * (L.comm + acq) - fix) : '';
     const margin = revenue ? profit / revenue : '';
 

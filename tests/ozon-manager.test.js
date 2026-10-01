@@ -113,7 +113,9 @@ test('onOpen: четыре отдельных меню, у каждой кноп
   const { ctx, menus } = load();
   ctx.onOpen();
   assert.deepEqual(menus.map(m => m.name), ['💰 ЦЕНЫ', '🏷 АКЦИИ', '📦 ОСТАТКИ', '⚙ НАСТРОЙКИ']);
-  const items = menus.flatMap(m => m.items.filter(i => i.fn));
+  const flat = list => list.flatMap(i => i.sub ? flat(i.sub.items) : [i]);
+  const items = menus.flatMap(m => flat(m.items).filter(i => i.fn));
+  menus.forEach(m => assert.ok(m.items.filter(i => i.fn || i.sub).length <= 7, `в меню «${m.name}» больше 7 пунктов`));
   items.forEach(i => assert.equal(typeof ctx[i.fn], 'function', `нет функции ${i.fn} для «${i.label}»`));
   const fns = items.map(i => i.fn);
   ['applySelectedForce', 'removeAllFromActions', 'setupSheetUi', 'analyzeShippingSpeed', 'compareCosts']
@@ -128,7 +130,8 @@ test('onOpen: четыре отдельных меню, у каждой кноп
 test('onOpen: подписи берут проценты и интервал из «Настроек»', () => {
   const { ctx, menus } = load({ settings: { MIN_MARGIN: 0.11, PROMO_MARGIN: 0.15, STOCKS_REFRESH_MIN: 7 } });
   ctx.onOpen();
-  const labels = menus.flatMap(m => m.items.filter(i => i.fn).map(i => i.label));
+  const flat = list => list.flatMap(i => i.sub ? flat(i.sub.items) : [i]);
+  const labels = menus.flatMap(m => flat(m.items).filter(i => i.fn).map(i => i.label));
   assert.ok(labels.includes('Применить отметки с маржой от 11%'));
   assert.ok(labels.includes('Применить отметки «Действие» (маржа от 15%)'));
   assert.ok(labels.includes('Включить автообновление (каждые 5 мин)'), '7 минут Google не принимает — берём 5');
@@ -395,4 +398,13 @@ test('цена факт. берёт цену в акции, если она ни
   const col = n => '$' + ctx.letter_(vm.runInContext('MAIN_COLS', ctx).indexOf(n) + 1) + '3';
   assert.ok(f.includes(`N(${col('Мин. цена в акциях, ₽')})<`), f);
   assert.ok(f.includes(col('Цена продажи, ₽')), f);
+});
+
+test('Ozon-карты нет ни в колонках, ни в формулах', () => {
+  const { ctx } = load();
+  const cols = vm.runInContext('MAIN_COLS.concat(TARIFF_COLS)', ctx);
+  assert.ok(!cols.some(c => /карт/i.test(c)), cols.join(', '));
+  const F = ctx.mainFormulas_(vm.runInContext('MAIN_COLS', ctx), 3);
+  assert.ok(!Object.values(F).some(f => /карт/i.test(f)));
+  assert.ok(!/карт/i.test(SRC.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '').replace(/'Ozon-карта'|'Ozon-карта, %'|'Скидка Ozon-карта, %'/g, '')));
 });
