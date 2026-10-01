@@ -424,3 +424,18 @@ test('закуп 1С: пустая колонка сегодняшней дат�
   ctx.importCosts_();
   assert.deepEqual(plain(cost), { 3: 500, 4: 700 });
 });
+
+test('лист Ozon: цена безубыточности и ROI', () => {
+  const { ctx } = load();
+  const cols = vm.runInContext('MAIN_COLS', ctx);
+  const F = ctx.mainFormulas_(cols, 3);
+  const col = n => '$' + ctx.letter_(cols.indexOf(n) + 1) + '3';
+  assert.match(F['Цена безубыточности, ₽'], /\(1-0-/);
+  assert.equal(F['ROI, %'], `=IF(OR(${col('Прибыль, ₽')}="",N(${col('Закуп, ₽')})<=0),"",${col('Прибыль, ₽')}/${col('Закуп, ₽')})`);
+});
+
+test('ABC: группы по прибыли, убыточные отдельно', () => {
+  const { ctx } = load();
+  const g = ctx.abcGroups_([{ key: 'a', p: 70 }, { key: 'b', p: 20 }, { key: 'c', p: 7 }, { key: 'd', p: 3 }, { key: 'e', p: -5 }], 'p');
+  assert.deepEqual(plain(['a', 'b', 'c', 'd', 'e'].map(k => g[k].g)), ['A', 'A', 'B', 'C', 'C ⛔']);
+});
