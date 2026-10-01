@@ -640,6 +640,7 @@ function addEligibleToSelected()  { run_('Добавить подходящие 
 function addEligibleToAll()       { run_('Добавить подходящие во все акции', () => addEligible_('all')); }
 function removeIneligible()       { run_('Убрать неподходящие из акций', removeIneligible_); }
 function applySelectedActions()   { run_('Применить действия по выбранной акции', () => applySelectedActions_()); }
+function removeMarkedFromAction() { run_('Удалить из акции выделенные и отмеченные', removeMarked_); }
 function applySelectedMin()       { run_('Применить отметки с маржой от ' + pctCfg_('MIN_MARGIN', 0.10), () => applySelectedActions_('min')); }
 
 /** Выделяет ключевые колонки: прибыль и маржа в акции */
@@ -846,7 +847,7 @@ function paintBog_(sh, n, na, lastAct) {
   };
   const R = (col, w) => [sh.getRange(BOG_FIRST, col, n, w || 1)];
   const pass = `LEFT($Q${BOG_FIRST},1)="✓"`, fail = `LEFT($Q${BOG_FIRST},1)="✗"`;
-  // цены, прибыль, маржа и статус красятся по вердикту «Проходит?»
+  // цены, прибыль и маржа красятся по вердикту «Проходит?»
   const priceCells = [sh.getRange(BOG_FIRST, BOG.IN_ACTION, n, 2),        // цена в акции и макс. цена
                       sh.getRange(BOG_FIRST, BOG.PROFIT, n, 2)];          // прибыль и маржа в акции
   sh.setConditionalFormatRules([
@@ -854,8 +855,9 @@ function paintBog_(sh, n, na, lastAct) {
     rule(`=AND(ISNUMBER(${tl}${BOG_FIRST}),ISNUMBER($I${BOG_FIRST}),${tl}${BOG_FIRST}>=$I${BOG_FIRST})`, '#C6EFCE', '#006100', [grid]),
     rule(`=${pass}`, '#C6EFCE', '#006100', R(BOG.PASS), true),
     rule(`=${fail}`, '#F8CBAD', '#9C0006', R(BOG.PASS), true),
-    rule(`=${pass}`, '#E6F4EA', '#1E7B34', R(BOG.STATUS)),
-    rule(`=${fail}`, '#FCE8E6', '#B3261E', R(BOG.STATUS)),
+    // статус — по участию: участвует зелёным, «нет в акции» серым, кандидат без заливки
+    rule(`=$P${BOG_FIRST}="Участвует"`, '#C6EFCE', '#006100', R(BOG.STATUS), true),
+    rule(`=$P${BOG_FIRST}="Нет в акции"`, '#F1F3F4', '#9AA0A6', R(BOG.STATUS)),
     rule(`=${pass}`, '#E6F4EA', '#1E7B34', priceCells),
     rule(`=${fail}`, '#FCE8E6', '#B3261E', priceCells),
     rule(`=N($U${BOG_FIRST})>0`, '#F8CBAD', '#9C0006', R(21), true)
@@ -934,11 +936,30 @@ function removeIneligible_() {
   return `${dry ? '[ПРОВЕРКА] ' : ''}ниже порога: ${total}. Подробно — лист «Лог»`;
 }
 
+/* ---------- Удалить из выбранной акции выделенные строки и строки с отметкой «Удалить» ---------- */
+function removeMarked_() {
+  const sh = sheet_(SHEETS.BOG), ss = SpreadsheetApp.getActive();
+  const rows = [];
+  if (ss.getActiveSheet().getName() === SHEETS.BOG) {
+    const list = ss.getActiveRangeList();
+    (list ? list.getRanges() : []).forEach(r => {
+      for (let i = Math.max(r.getRow(), BOG_FIRST); i <= Math.min(r.getLastRow(), sh.getLastRow()); i++) rows.push(i);
+    });
+  }
+  if (rows.length) {                                      // выделенные строки помечаем «Удалить»
+    const h = sh.getRange(2, 1, 1, sh.getLastColumn()).getValues()[0].map(x => String(x).trim());
+    const c = (h.indexOf('Действие') >= 0 ? h.indexOf('Действие') : BOG.ACTION - 1) + 1;
+    rows.forEach(i => { if (sh.getRange(i, 1).getValue() !== '') sh.getRange(i, c).setValue('Удалить'); });
+  }
+  return applySelectedActions_('del');
+}
+
 /* ---------- Ручные отметки в колонке «Действие» по выбранной акции ---------- */
 /**
  * Обычный режим: добавляем, только если цена акции не ниже «Порога акций» (PROMO_MARGIN).
  * mode = 'min': порог — «Мин. цена» (MIN_MARGIN). Товары между «Мин. ценой» и «Порогом акций»
  * запоминаются как ручное решение, и ночная чистка их не убирает. Ниже «Мин. цены» — никогда.
+ * mode = 'del': только отметки «Удалить», «Добавить» не трогаем; в боевом режиме — с подтверждением.
  */
 function applySelectedActions_(mode) {
   const sh = sheet_(SHEETS.BOG), dry = isDryRun_(), toMin = mode === 'min';
@@ -960,6 +981,7 @@ function applySelectedActions_(mode) {
   let marks = 0;
   data.forEach((row, i) => {
     const act = String(row[cAct] || '').trim(); if (!act) return;
+    if (mode === 'del' && act !== 'Удалить') return;
     marks++;
     const rowNum = BOG_FIRST + i, pid = Number(row[cPid]);
     if (!pid) { res[rowNum] = '✗ нет Product ID в строке'; return; }
@@ -988,9 +1010,15 @@ function applySelectedActions_(mode) {
   }
 
   const belowNote = `маржа ниже ${promoPct}, но не ниже ${minPct} — ручное решение`;
+  if (mode === 'del' && !dry) {
+    const ui = SpreadsheetApp.getUi();
+    const a = ui.alert('Удалить из акции', `Убрать из акции «${sel.title}» товаров: ${del.length}?`, ui.ButtonSet.YES_NO);
+    if (a !== ui.Button.YES) return 'отменено';
+  }
   if (dry) {
-    add.forEach(x => res[x.row] = `ПРОВЕРКА: добавили бы по ${x.price}` + (x.below ? ` (${belowNote})` : ''));
-    del.forEach(x => res[x.row] = 'ПРОВЕРКА: убрали бы из акции');
+    const note = 'ПРОВЕРКА — режим проверки, в Ozon не ушло: ';
+    add.forEach(x => res[x.row] = `${note}добавили бы по ${x.price}` + (x.below ? ` (${belowNote})` : ''));
+    del.forEach(x => res[x.row] = `${note}убрали бы из акции`);
   } else {
     const manual = manualPromo_();
     chunk_(add, 1000).forEach(part => {
@@ -1024,7 +1052,13 @@ function applySelectedActions_(mode) {
     if (res[row].indexOf('✓') === 0) vAct[i][0] = '';
   });
   colRes.setValues(vRes); colAct.setValues(vAct);
-  if (!dry) refreshActions_();
+  if (!dry) {
+    // после действий лист перестраивается и колонка «Результат» очищается — возвращаем результаты по Product ID
+    const byPid = {};
+    Object.keys(res).forEach(row => { byPid[key_(data[Number(row) - BOG_FIRST][cPid])] = res[row]; });
+    refreshActions_();
+    writeBogResultsByPid_(byPid);
+  }
   const nBelow = add.filter(x => x.below).length;
   return `${dry ? '[ПРОВЕРКА] ' : ''}${toMin ? `[МАРЖА ОТ ${minPct}] ` : ''}добавить: ${add.length}` +
     (nBelow ? ` (из них с маржой ниже ${promoPct}: ${nBelow})` : '') + `, убрать: ${del.length} (акция «${sel.title}»)`;
@@ -1128,6 +1162,16 @@ function distributeBestActions_() {
     `убираем совсем ${dropped}, без закупа пропущено ${skipped}\n` + report.join('\n'));
   if (!dry && (added || removed)) refreshActions_();
   return `${dry ? '[ПРОВЕРКА] ' : ''}переставить: ${moved}, уже верно: ${kept}, добавлено: ${added}, убрано: ${removed}. Подробно — «Лог» и колонка «Результат»`;
+}
+
+/** Пишет результаты в колонку «Результат» по Product ID (после перестройки листа) */
+function writeBogResultsByPid_(byPid) {
+  const sh = sheet_(SHEETS.BOG), last = sh.getLastRow();
+  if (last < BOG_FIRST || !Object.keys(byPid).length) return;
+  const pids = sh.getRange(BOG_FIRST, BOG.PID, last - BOG_FIRST + 1, 1).getValues();
+  const rng = sh.getRange(BOG_FIRST, BOG.RESULT, pids.length, 1), v = rng.getValues();
+  pids.forEach((r, i) => { const t = byPid[key_(r[0])]; if (t !== undefined) v[i][0] = t; });
+  rng.setValues(v);
 }
 
 /** Записывает пояснение по каждому товару в колонку «Результат» листа «Бог акций» */
@@ -1443,6 +1487,7 @@ function onOpen() {
     .addSeparator()
     .addItem(`Применить отметки «Действие» (маржа от ${promo})`, 'applySelectedActions')
     .addItem(`Применить отметки с маржой от ${min}`, 'applySelectedMin')
+    .addItem('Удалить из акции выделенные и отмеченные', 'removeMarkedFromAction')
     .addSeparator()
     .addItem('Добавить все подходящие по марже', 'addEligibleToAll')
     .addItem('Убрать неподходящие по марже', 'removeIneligible')

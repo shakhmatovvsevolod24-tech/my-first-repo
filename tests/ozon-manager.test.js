@@ -158,7 +158,7 @@ test('обычные отметки: только от 12%, без порога 
   const { ctx, sh, calls } = setupBog();
   const msg = ctx.applySelectedActions_();
   assert.match(msg, /^\[ПРОВЕРКА\] добавить: 1, убрать: 1/);
-  assert.match(resultOf(sh, 'A-ok'), /^ПРОВЕРКА: добавили бы по 120$/);
+  assert.match(resultOf(sh, 'A-ok'), /^ПРОВЕРКА.*: добавили бы по 120$/);
   assert.match(resultOf(sh, 'B-mid'), /^✗ ниже порога 110 .*маржой от 10%/);
   assert.match(resultOf(sh, 'C-low'), /^✗ ниже порога 110/);
   assert.match(resultOf(sh, 'D-nofloor'), /^✗ нет порога/);
@@ -169,8 +169,8 @@ test('отметки с маржой от 10%: пропускает 10–12%, н
   const { ctx, sh } = setupBog();
   const msg = ctx.applySelectedActions_('min');
   assert.match(msg, /\[МАРЖА ОТ 10%\] добавить: 2 \(из них с маржой ниже 12%: 1\), убрать: 1/);
-  assert.match(resultOf(sh, 'A-ok'), /^ПРОВЕРКА: добавили бы по 120$/);
-  assert.match(resultOf(sh, 'B-mid'), /^ПРОВЕРКА: добавили бы по 105 \(маржа ниже 12%, но не ниже 10%/);
+  assert.match(resultOf(sh, 'A-ok'), /^ПРОВЕРКА.*: добавили бы по 120$/);
+  assert.match(resultOf(sh, 'B-mid'), /^ПРОВЕРКА.*: добавили бы по 105 \(маржа ниже 12%, но не ниже 10%/);
   assert.match(resultOf(sh, 'C-low'), /^✗ ниже мин. цены 100/);
   assert.match(resultOf(sh, 'D-nofloor'), /^✗ нет порога/);
 });
@@ -357,4 +357,33 @@ test('источники закупа из старой таблицы: по ID 
   assert.deepEqual(patches['Источник закупа'], { 3: 'Прайс POSCENTER', 4: '1С' });
   assert.deepEqual(patches['Код в прайсе'], { 3: 4538 });
   assert.match(msg, /источник поменян у 2, совпадал у 1, не тронуты .*: 1/);
+});
+
+/* ---------- Удаление из акции ---------- */
+function withSelection(env, rows) {
+  const ranges = rows.map(([a, b]) => ({ getRow: () => a, getLastRow: () => b }));
+  env.ctx.SpreadsheetApp.getActive = () => ({
+    getActiveSheet: () => ({ getName: () => 'Бог акций' }),
+    getActiveRangeList: () => ({ getRanges: () => ranges }),
+    getSheetByName: () => null, toast() {}
+  });
+}
+
+test('удалить выделенные: только удаление, «Добавить» не трогаем', () => {
+  const env = setupBog();
+  withSelection(env, [[4, 5]]);                         // строки B-mid и C-low
+  const msg = env.ctx.removeMarked_();
+  assert.match(msg, /добавить: 0, убрать: 3/, 'две выделенные + E-del с отметкой');
+  assert.match(resultOf(env.sh, 'B-mid'), /убрали бы из акции$/);
+  assert.equal(resultOf(env.sh, 'A-ok'), '', 'отметка «Добавить» не обработана');
+  assert.equal(actionOf(env.sh, 'A-ok'), 'Добавить');
+});
+
+test('боевой режим: результат виден после перестройки листа', () => {
+  const env = setupBog({ settings: { DRY_RUN: false } });
+  withSelection(env, []);
+  env.ctx.refreshActions_ = () => { env.sh.rows.slice(2).forEach(r => { r[18] = ''; r[17] = ''; }); return ''; };
+  env.ctx.ozon_ = (p, body) => ({ result: { product_ids: body.product_ids || [], rejected: [] } });
+  env.ctx.removeMarked_();
+  assert.equal(resultOf(env.sh, 'E-del'), '✓ убран');
 });
