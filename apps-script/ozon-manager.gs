@@ -515,8 +515,11 @@ function importCosts_() {
     }
     const tz = Session.getScriptTimeZone(), today = Utilities.formatDate(new Date(), tz, 'yyyy.MM.dd');
     const hdr = (data[0] || []).map(v => v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy.MM.dd') : String(v).trim());
-    let col = data.length ? hdr.indexOf(today) : -1;
-    if (col < 0) { const past = hdr.map((v, i) => [v, i]).filter(([v]) => /^\d{4}\.\d{2}\.\d{2}$/.test(v) && v <= today).sort(); if (past.length) col = past[past.length - 1][1]; }
+    // самая свежая дата не позже сегодня, в которой есть цены: колонку нового дня в 1С создают раньше, чем заполняют
+    const filled = i => data.slice(1).some(row => num_(row[i]) !== '');
+    const dates = hdr.map((v, i) => [v, i]).filter(([v]) => /^\d{4}\.\d{2}\.\d{2}$/.test(v) && v <= today).sort().reverse();
+    const hit = dates.find(([, i]) => filled(i));
+    let col = hit ? hit[1] : -1;
     if (col >= 0) data.slice(1).forEach(row => {
       const k = key_(row[0]);
       if (k) has1c[k] = true;
@@ -717,9 +720,7 @@ function floorIn_(t, manual, actionId, pid) {
 /* ---------- Перестроить матрицу ---------- */
 function refreshActions_() {
   const sh = sheet_(SHEETS.BOG), acts = listActions_(), main = readMain_();
-  // колонку «Ozon-карта» больше не ведём — удаляем со старых листов один раз
-  const oldCard = headersAt_(sh, 2).indexOf('Ozon-карта');
-  if (oldCard >= 0 && oldCard < BOG_ACT_COL) sh.deleteColumn(oldCard + 1);
+  migrateBog_();
   const prods = main.rows.filter(r => Number(r['Product ID']) > 0);
   const sel = acts.find(a => String(a.title).trim() === selectedTitle_()) || acts[0];
 
@@ -2032,7 +2033,17 @@ function mainFormulas_(h, r) {
 }
 
 /* ---------- Применение ---------- */
+/** Колонку «Ozon-карта» на «Бог акций» больше не ведём — удаляем со старых листов один раз.
+ *  Делать это нужно до записи формул листа Ozon: они ссылаются на колонки акций «Бог акций». */
+function migrateBog_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEETS.BOG);
+  if (!sh || sh.getLastColumn() < 1) return;
+  const i = headersAt_(sh, 2).indexOf('Ozon-карта');
+  if (i >= 0 && i < BOG_ACT_COL) sh.deleteColumn(i + 1);
+}
+
 function applySchema_() {
+  migrateBog_();
   const out = [];
   out.push('листы: ' + ensureSheets_());
   out.push('Настройки: ' + ensureSettings_());

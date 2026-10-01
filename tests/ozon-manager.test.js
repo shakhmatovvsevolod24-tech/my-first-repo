@@ -408,3 +408,19 @@ test('Ozon-карты нет ни в колонках, ни в формулах'
   assert.ok(!Object.values(F).some(f => /карт/i.test(f)));
   assert.ok(!/карт/i.test(SRC.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '').replace(/'Ozon-карта'|'Ozon-карта, %'|'Скидка Ozon-карта, %'/g, '')));
 });
+
+test('закуп 1С: пустая колонка сегодняшней даты пропускается, берётся последняя заполненная', () => {
+  const env = load({ settings: { COST_1C_SHEET_ID: 'ID_1C', COST_1C_SHEET: 'Prices' } });
+  const { ctx } = env;
+  const today = '2026.10.01';
+  ctx.Utilities.formatDate = () => today;
+  const c1 = new Sheet([['product_id', '2026.09.30', today], [1, 500, ''], [2, 700, '']]);
+  ctx.SpreadsheetApp.openById = id => (id === 'ID_1C' ? { getSheetByName: () => c1 } : null);
+  ctx.readTable_ = () => ({ rows: [] });
+  ctx.readMain_ = () => ({ rows: [{ _row: 3, 'Артикул': 'a', 'Источник закупа': '1С', 'Product ID': 1 },
+                                  { _row: 4, 'Артикул': 'b', 'Источник закупа': '1С', 'Product ID': 2 }] });
+  const cost = {};
+  ctx.mainPatch_ = (m, name, patch) => { if (name === 'Закуп, ₽') Object.assign(cost, patch); };
+  ctx.importCosts_();
+  assert.deepEqual(plain(cost), { 3: 500, 4: 700 });
+});
