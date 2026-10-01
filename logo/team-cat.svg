@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Палитра клуба: тёмно-синий, золото, полосатый коричневый, белый -->
+  <defs>
+    <clipPath id="inner"><circle cx="256" cy="256" r="172"/></clipPath>
+    <path id="arcTop" d="M70 256 A186 186 0 0 1 442 256"/>
+    <path id="arcBottom" d="M78 256 A178 178 0 0 0 434 256"/>
+  </defs>
+
+  <!-- Шеврон -->
+  <circle cx="256" cy="256" r="248" fill="#0b1f3a"/>
+  <circle cx="256" cy="256" r="236" fill="none" stroke="#f2a900" stroke-width="8"/>
+  <circle cx="256" cy="256" r="176" fill="#f2a900"/>
+  <circle cx="256" cy="256" r="172" fill="#e9f1f8"/>
+
+  <text font-family="DejaVu Sans, Arial, sans-serif" font-weight="bold" font-size="34" letter-spacing="4" fill="#ffffff">
+    <textPath href="#arcTop" startOffset="50%" text-anchor="middle">ХОККЕЙНЫЙ КЛУБ</textPath>
+  </text>
+  <text font-family="DejaVu Sans, Arial, sans-serif" font-weight="bold" font-size="46" letter-spacing="10" fill="#f2a900">
+    <textPath href="#arcBottom" startOffset="50%" text-anchor="middle" dominant-baseline="hanging">КОТЫ</textPath>
+  </text>
+  <g fill="#f2a900">
+    <path d="M40 256 l7 -14 l7 14 l-7 14 z" transform="rotate(0)"/>
+    <path d="M458 256 l7 -14 l7 14 l-7 14 z"/>
+  </g>
+
+  <g clip-path="url(#inner)">
+    <!-- Свитер -->
+    <path d="M96 440 C104 380 160 352 256 350 C352 352 408 380 416 440 Z" fill="#0b1f3a"/>
+    <path d="M120 402 C150 380 176 372 200 368 L206 384 C182 388 156 396 128 418 Z" fill="#f2a900"/>
+    <path d="M392 402 C362 380 336 372 312 368 L306 384 C330 388 356 396 384 418 Z" fill="#f2a900"/>
+    <!-- Скрещённые клюшки -->
+    <g stroke="#0b1f3a" stroke-width="6" stroke-linejoin="round" fill="#f2a900">
+      <path d="M136 112 L326 370 L382 370 L382 350 L340 350 L156 98 Z"/>
+      <path d="M376 112 L186 370 L130 370 L130 350 L172 350 L356 98 Z"/>
+    </g>
+    <!-- Белая грудка в вырезе -->
+    <path d="M204 352 L230 380 L222 392 L242 404 L256 426 L270 404 L290 392 L282 380 L308 352 Z" fill="#ffffff" stroke="#0b1f3a" stroke-width="5" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Голова (выходит за круг — как у клубных маскотов) -->
+  <g stroke="#0b1f3a" stroke-linejoin="round" stroke-linecap="round" transform="translate(256 300) scale(0.86) translate(-256 -300)">
+    <!-- уши -->
+    <path d="M178 176 L118 88 L224 140 Z" fill="#9a6535" stroke-width="8"/>
+    <path d="M334 176 L394 88 L288 140 Z" fill="#9a6535" stroke-width="8"/>
+    <path d="M176 160 L140 108 L206 142 Z" fill="#f0b4a8" stroke-width="0"/>
+    <path d="M336 160 L372 108 L306 142 Z" fill="#f0b4a8" stroke-width="0"/>
+    <path d="M160 138 l12 -4 M170 150 l14 -4 M352 138 l-12 -4 M342 150 l-14 -4" stroke="#ffffff" stroke-width="4"/>
+
+    <!-- пушистая морда с «зубцами» шерсти -->
+    <path d="M256 132
+             C318 132 364 160 388 206
+             L414 212 L398 234 L426 252 L400 266 L422 290 L392 296 L404 322 L372 320
+             C346 356 304 376 256 376
+             C208 376 166 356 140 320
+             L108 322 L120 296 L90 290 L112 266 L86 252 L114 234 L98 212 L124 206
+             C148 160 194 132 256 132 Z"
+          fill="#b07a45" stroke-width="9"/>
+
+    <!-- тень на щеках -->
+    <path d="M124 250 L150 254 L132 276 L156 282 L142 302 C160 330 200 352 230 356 L150 330 Z" fill="#8a5a2c" stroke-width="0"/>
+    <path d="M388 250 L362 254 L380 276 L356 282 L370 302 C352 330 312 352 282 356 L362 330 Z" fill="#8a5a2c" stroke-width="0"/>
+
+    <!-- полосы табби: «М» на лбу и на щеках -->
+    <g fill="#4a2c14" stroke-width="0">
+      <path d="M250 146 L262 146 L260 200 L252 200 Z"/>
+      <path d="M226 150 L238 148 L244 194 L236 196 Z"/>
+      <path d="M286 150 L274 148 L268 194 L276 196 Z"/>
+      <path d="M200 162 L212 158 L224 196 L216 198 Z"/>
+      <path d="M312 162 L300 158 L288 196 L296 198 Z"/>
+      <path d="M112 236 L160 244 L158 252 L118 248 Z"/>
+      <path d="M116 270 L162 268 L160 276 L124 282 Z"/>
+      <path d="M400 236 L352 244 L354 252 L394 248 Z"/>
+      <path d="M396 270 L350 268 L352 276 L388 282 Z"/>
+    </g>
+
+    <!-- белая мордочка -->
+    <path d="M256 258
+             C226 254 196 268 192 296
+             C188 330 220 360 256 362
+             C292 360 324 330 320 296
+             C316 268 286 254 256 258 Z" fill="#ffffff" stroke-width="0"/>
+    <path d="M210 236 C200 250 194 262 194 280 M302 236 C312 250 318 262 318 280" stroke="#ffffff" stroke-width="18" fill="none"/>
+
+    <!-- глаза: большие, решительные -->
+    <circle cx="208" cy="236" r="36" fill="#f2a900" stroke-width="7"/>
+    <circle cx="304" cy="236" r="36" fill="#f2a900" stroke-width="7"/>
+    <circle cx="210" cy="240" r="25" fill="#0b0b10" stroke-width="0"/>
+    <circle cx="302" cy="240" r="25" fill="#0b0b10" stroke-width="0"/>
+    <circle cx="198" cy="230" r="8" fill="#ffffff" stroke-width="0"/>
+    <circle cx="290" cy="230" r="8" fill="#ffffff" stroke-width="0"/>
+    <!-- нахмуренные веки -->
+    <path d="M166 196 L254 218 L250 206 L170 186 Z" fill="#b07a45" stroke-width="0"/>
+    <path d="M346 196 L258 218 L262 206 L342 186 Z" fill="#b07a45" stroke-width="0"/>
+    <path d="M170 208 L248 222" stroke-width="9" fill="none"/>
+    <path d="M342 208 L264 222" stroke-width="9" fill="none"/>
+
+    <!-- нос и приоткрытый рот -->
+    <path d="M238 278 L274 278 L256 298 Z" fill="#e88a8e" stroke-width="5"/>
+    <path d="M256 298 L256 308" stroke-width="5" fill="none"/>
+    <path d="M232 312 C240 304 250 306 256 308 C262 306 272 304 280 312 C276 332 236 332 232 312 Z" fill="#7a1622" stroke-width="5"/>
+    <path d="M238 313 L243 324 L247 311 Z M274 313 L269 324 L265 311 Z" fill="#ffffff" stroke-width="0"/>
+
+    <!-- усы -->
+    <g stroke-width="3.5" fill="none">
+      <path d="M200 300 L128 290 M200 310 L126 316 M204 320 L138 342"/>
+      <path d="M312 300 L384 290 M312 310 L386 316 M308 320 L374 342"/>
+    </g>
+  </g>
+
+</svg>
