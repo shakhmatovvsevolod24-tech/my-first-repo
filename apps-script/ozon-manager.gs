@@ -447,119 +447,393 @@ function syncOrders60_() {
   return `за ${days} дн., артикулов с заказами: ${Object.keys(qty).length}`;
 }
 
-/* ---------- Закуп: MAX(прайс поставщика; себестоимость 1С на сегодня) ----------
- * Заменяет формулы IMPORTRANGE в колонке «Закупочная цена». Источники — лист «Источники закупа».
- * Код ищется только в прайсе своего источника; источник «1С» — только себестоимость из 1С.
+/* ---------- Закуп ----------
+ * Источники — лист «Источники закупа»: живая таблица поставщика (ID таблицы) или папка на Диске,
+ * куда кладут присланные файлы (берётся самый свежий файл, Excel открывается через копию).
+ * Какую цену брать, решает «Правило закупа»: у товара → у прайса → COST_RULE_DEFAULT.
+ *   MAX — дороже из прайса и 1С; Прайс — цена поставщика сегодня; 1С — себестоимость по приходу.
+ * Код ищется только в прайсе своего источника; источник «1С» — только себестоимость из 1С; «вручную» не трогаем.
+ * Всё подозрительное (старый прайс, нет кода, прайс и 1С сильно расходятся, закуп скакнул)
+ * собирается на листе «Закупы на проверку», каждое изменение закупа — в «Истории закупа».
  */
-function importCosts_() {
+var COST_CHECK_SHEET = 'Закупы на проверку';
+var COST_CHECK_COLS = ['Артикул', 'Название', 'Категория', 'Источник закупа', 'Правило', 'Закуп был, ₽', 'Закуп стал, ₽',
+  'Изменение, %', 'Прайс, ₽', '1С, ₽', 'Прайс к 1С, %', 'Маржа, %', 'Что проверить', 'Принято'];
+var COST_HISTORY_SHEET = 'История закупа';
+var COST_HISTORY_COLS = ['Дата', 'Артикул', 'Было, ₽', 'Стало, ₽', 'Изменение, %', 'Откуда', 'Правило'];
+var COST_HISTORY_MAX = 20000;                     // старые строки истории сверх этого числа удаляются
+var CONV_PREFIX_ = '[копия для скрипта] ';         // копии Excel-файлов из папки прайсов
+var SHEET_MIME_ = 'application/vnd.google-apps.spreadsheet';
+var TABLE_MIMES_ = [SHEET_MIME_, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel', 'text/csv'];
+
+/** ID из ссылки на таблицу или папку (можно вставить и ссылку, и сам ID) */
+function idFrom_(v) {
+  const s = String(v || '').trim();
+  const m = s.match(/\/d\/([\w-]{20,})/) || s.match(/folders\/([\w-]{20,})/) || s.match(/[?&]id=([\w-]{20,})/);
+  return m ? m[1] : s;
+}
+
+/** Правило закупа: MAX, Прайс или 1С ('' — не задано) */
+function costRule_(v) {
+  const s = String(v || '').trim().toLowerCase();
+  if (!s) return '';
+  if (/^(max|макс)/.test(s)) return 'MAX';
+  if (/^(прайс|price)/.test(s)) return 'Прайс';
+  if (/^1[сc]/.test(s)) return '1С';
+  return '';
+}
+
+/** Сколько дней прошло с даты (дробное), '' — дата неизвестна */
+function ageDays_(d) { return d && typeof d.getTime === 'function' && !isNaN(d.getTime()) ? (Date.now() - d.getTime()) / 864e5 : ''; }
+function fmtDay_(d) { try { return Utilities.formatDate(d, Session.getScriptTimeZone(), 'dd.MM.yyyy'); } catch (e) { return String(d); } }
+
+/**
+ * Открывает прайс: из папки — самый свежий подходящий файл, иначе таблицу по ID.
+ * Возвращает { book, updated, file } или { error }.
+ */
+function openPriceSource_(src) {
+  const folderId = idFrom_(src['Папка']);
+  if (!folderId) {
+    const id = idFrom_(src['ID таблицы']);
+    if (!id) return { error: 'не указаны ни «ID таблицы», ни «Папка»' };
+    let book = null;
+    try { book = SpreadsheetApp.openById(id); } catch (e) {}
+    if (!book) return { error: 'нет доступа', link: `https://docs.google.com/spreadsheets/d/${id}` };
+    let updated = '';
+    try { updated = DriveApp.getFileById(id).getLastUpdated(); } catch (e) {}
+    return { book, updated, file: '' };
+  }
+  let folder;
+  try { folder = DriveApp.getFolderById(folderId); folder.getName(); } catch (e) {
+    return { error: 'нет доступа к папке', link: `https://drive.google.com/drive/folders/${folderId}` };
+  }
+  const mask = String(src['Файл содержит'] || '').trim().toLowerCase();
+  let best = null;
+  const it = folder.getFiles();
+  while (it.hasNext()) {
+    const f = it.next(), name = f.getName();
+    if (name.indexOf(CONV_PREFIX_) === 0 || TABLE_MIMES_.indexOf(f.getMimeType()) < 0) continue;
+    if (mask && name.toLowerCase().indexOf(mask) < 0) continue;
+    if (!best || f.getLastUpdated() > best.getLastUpdated()) best = f;
+  }
+  if (!best) return { error: mask ? `в папке нет файла, в названии которого есть «${src['Файл содержит']}»` : 'в папке нет файлов-таблиц' };
+  const book = best.getMimeType() === SHEET_MIME_ ? SpreadsheetApp.openById(best.getId()) : convertedCopy_(best, folderId);
+  return { book, updated: best.getLastUpdated(), file: best.getName() };
+}
+
+/** Excel/CSV из папки: читаем через копию в формате Google Таблицы. Копия делается заново, только когда файл изменился. */
+function convertedCopy_(file, folderId) {
+  const props = PropertiesService.getDocumentProperties();
+  const key = 'CONV_' + file.getId(), ts = file.getLastUpdated().getTime();
+  const saved = JSON.parse(props.getProperty(key) || 'null');
+  if (saved && saved.ts === ts) { try { return SpreadsheetApp.openById(saved.id); } catch (e) {} }
+  const resp = UrlFetchApp.fetch(`https://www.googleapis.com/drive/v3/files/${file.getId()}/copy?supportsAllDrives=true`, {
+    method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    payload: JSON.stringify({ name: CONV_PREFIX_ + file.getName(), mimeType: SHEET_MIME_, parents: [folderId] })
+  });
+  if (resp.getResponseCode() >= 300) throw new Error(`файл «${file.getName()}» не открылся: ${resp.getContentText().slice(0, 200)}`);
+  const id = JSON.parse(resp.getContentText()).id;
+  if (saved && saved.id) { try { DriveApp.getFileById(saved.id).setTrashed(true); } catch (e) {} }
+  props.setProperty(key, JSON.stringify({ id, ts }));
+  return SpreadsheetApp.openById(id);
+}
+
+/** Цены одного прайса: { код: { cost, rrc } } */
+function readPriceBook_(book, src, usd) {
   const colIdx = L => L.toUpperCase().split('').reduce((a, ch) => a * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+  const name = String(src['Источник']).trim();
+  // прайс может быть в долларах: тогда цену умножаем на курс USD_RATE
+  const rate = String(src['Валюта'] || 'RUB').trim().toUpperCase() === 'USD' ? usd : 1;
+  const map = {}, warn = [];
+  // в колонке «Лист» можно перечислить несколько листов через запятую или точку с запятой; пусто — первый лист
+  const wanted = String(src['Лист'] || '').split(/[;,]/).map(x => x.trim()).filter(Boolean);
+  const sheets = book.getSheets();
+  const list = wanted.length
+    // названия листов сравниваем без учёта пробелов по краям («Прайс » у CAS)
+    ? wanted.map(w => sheets.find(x => x.getName().trim().toLowerCase() === w.toLowerCase()) || w)
+    : sheets.slice(0, 1);
+  list.forEach(sh => {
+    if (typeof sh === 'string') { warn.push(`нет листа «${sh}»`); return; }
+    try {
+      const rng = sh.getDataRange();
+      const data = rng.getValues(), disp = rng.getDisplayValues();   // по виду ячейки узнаём валюту: $ или р.
+      const kc = colIdx(String(src['Колонка кода'])), pc = colIdx(String(src['Колонка закупа']));
+      const rc = src['Колонка РРЦ'] ? colIdx(String(src['Колонка РРЦ'])) : -1;
+      // валюта ячейки: знак $ — доллары, «р.»/«₽»/«руб» — рубли, без пометки — валюта источника
+      const cellRate = txt => {
+        const t = String(txt || '');
+        if (/\$|usd/i.test(t)) return usd;
+        if (/р\.|₽|руб|rub/i.test(t)) return 1;
+        return rate;
+      };
+      const parse = (v, txt) => {
+        let n = num_(v);
+        if (n === '') n = num_(String(txt || '').replace(/[^\d,.\-]/g, ''));   // «3 400р.» как текст
+        return n;
+      };
+      data.forEach((row, i) => {
+        const k = key_(row[kc]);
+        if (!k || map[k] !== undefined) return;
+        const cost = parse(row[pc], disp[i][pc]);
+        const rrc = rc >= 0 ? parse(row[rc], disp[i][rc]) : '';
+        if (cost !== '' && cellRate(disp[i][pc]) === usd && !(usd > 0)) return;       // курс не задан — не гадаем
+        map[k] = {
+          cost: (cost === '' ? '' : Math.round(cost * cellRate(disp[i][pc]))),
+          rrc: (rrc === '' ? '' : Math.round(rrc * cellRate(rc >= 0 ? disp[i][rc] : '')))
+        };
+      });
+    } catch (e) { warn.push(`лист «${sh.getName()}»: ${e.message}`); }
+  });
+  if (warn.length) log_('Закуп', 'WARN', `Источник «${name}»: ${warn.join('; ')}`);
+  return { map, warn };
+}
+
+/** Себестоимость 1С: строки — product_id, колонки — даты. Берём самую свежую заполненную дату не позже сегодня. */
+function read1C_() {
+  const out = { c1: {}, has: {}, date: '', id: String(cfg_('COST_1C_SHEET_ID', '')).trim(), error: '' };
+  if (!out.id) return out;
+  let data = [];
+  try {
+    data = SpreadsheetApp.openById(out.id).getSheetByName(String(cfg_('COST_1C_SHEET', 'Prices'))).getDataRange().getValues();
+  } catch (e) {
+    out.error = `нет доступа: https://docs.google.com/spreadsheets/d/${out.id}`;
+    return out;
+  }
+  const tz = Session.getScriptTimeZone(), today = Utilities.formatDate(new Date(), tz, 'yyyy.MM.dd');
+  const hdr = (data[0] || []).map(v => v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy.MM.dd') : String(v).trim());
+  // колонку нового дня в 1С создают раньше, чем заполняют — пустые даты пропускаем
+  const filled = i => data.slice(1).some(row => num_(row[i]) !== '');
+  const dates = hdr.map((v, i) => [v, i]).filter(([v]) => /^\d{4}\.\d{2}\.\d{2}$/.test(v) && v <= today).sort().reverse();
+  const hit = dates.find(([, i]) => filled(i));
+  if (!hit) { if (data.length) out.error = 'не найдена колонка с датой'; return out; }
+  out.date = hit[0];
+  data.slice(1).forEach(row => {
+    const k = key_(row[0]);
+    if (!k) return;
+    out.has[k] = true;
+    const v = num_(row[hit[1]]);
+    if (v !== '') out.c1[k] = v;
+  });
+  return out;
+}
+
+function importCosts_() {
   const usd = Number(cfg_('USD_RATE', 0));
-  const sources = {}, noAccess = [];
-  readTable_(SHEETS.SOURCES).rows.forEach(src => {
+  const defRule = costRule_(cfg_('COST_RULE_DEFAULT', 'MAX')) || 'MAX';
+  const maxAge = Number(cfg_('PRICE_MAX_AGE_DAYS', 30)) || 0;
+  const diffAlert = Number(cfg_('COST_DIFF_ALERT', 0.15)) || 0, jumpAlert = Number(cfg_('COST_JUMP_ALERT', 0.15)) || 0;
+
+  // 1. прайсы и их свежесть
+  const srcTbl = readTable_(SHEETS.SOURCES);
+  const sources = {}, info = {}, noAccess = [];
+  srcTbl.rows.forEach(src => {
     const name = String(src['Источник']).trim();
-    // прайс может быть в долларах: тогда цену умножаем на курс USD_RATE
-    const cur = String(src['Валюта'] || 'RUB').trim().toUpperCase();
-    const rate = cur === 'USD' ? usd : 1;
-    if (cur === 'USD' && !(usd > 0)) log_('Закуп', 'WARN', `Источник «${name}» в USD, но курс USD_RATE не задан`);
-    const map = {};
-    // в колонке «Лист» можно перечислить несколько листов через запятую или точку с запятой
-    const bookId = String(src['ID таблицы']).trim();
-    const book = (() => { try { return SpreadsheetApp.openById(bookId); } catch (e) { return null; } })();
-    if (!book) {
-      noAccess.push(`${name}: https://docs.google.com/spreadsheets/d/${bookId}`);
+    const i = info[name] = { row: src._row, rule: costRule_(src['Правило']), status: '', updated: '', file: '', count: 0, bad: '' };
+    if (String(src['Валюта'] || '').trim().toUpperCase() === 'USD' && !(usd > 0)) i.bad = 'прайс в USD, а курс USD_RATE не задан';
+    let o;
+    try { o = openPriceSource_(src); } catch (e) { o = { error: e.message }; }
+    if (o.error) {
+      i.status = '⛔ ' + o.error;
+      i.bad = o.error + (o.link ? ' ' + o.link : '');
+      if (o.link) noAccess.push(`${name}: ${o.link}`);
       sources[name] = {};
       return;
     }
-    String(src['Лист']).split(/[;,]/).map(x => x.trim()).filter(Boolean).forEach(sheetName => {
-      try {
-        // названия листов сравниваем без учёта пробелов по краям («Прайс » у CAS)
-        const sh = book.getSheets().find(x => x.getName().trim().toLowerCase() === sheetName.toLowerCase());
-        if (!sh) { log_('Закуп', 'WARN', `Источник «${name}»: нет листа «${sheetName}»`); return; }
-        const rng = sh.getDataRange();
-        const data = rng.getValues(), disp = rng.getDisplayValues();   // по виду ячейки узнаём валюту: $ или р.
-        const kc = colIdx(String(src['Колонка кода'])), pc = colIdx(String(src['Колонка закупа']));
-        const rc = src['Колонка РРЦ'] ? colIdx(String(src['Колонка РРЦ'])) : -1;
-        // валюта ячейки: знак $ — доллары, «р.»/«₽»/«руб» — рубли, без пометки — валюта источника
-        const cellRate = txt => {
-          const t = String(txt || '');
-          if (/\$|usd/i.test(t)) return usd;
-          if (/р\.|₽|руб|rub/i.test(t)) return 1;
-          return rate;
-        };
-        const parse = (v, txt) => {
-          let n = num_(v);
-          if (n === '') n = num_(String(txt || '').replace(/[^\d,.\-]/g, ''));   // «3 400р.» как текст
-          return n;
-        };
-        data.forEach((row, i) => {
-          const k = key_(row[kc]);
-          if (!k || map[k] !== undefined) return;
-          const cost = parse(row[pc], disp[i][pc]);
-          const rrc = rc >= 0 ? parse(row[rc], disp[i][rc]) : '';
-          if (cost !== '' && cellRate(disp[i][pc]) === usd && !(usd > 0)) return;       // курс не задан — не гадаем
-          map[k] = {
-            cost: (cost === '' ? '' : Math.round(cost * cellRate(disp[i][pc]))),
-            rrc: (rrc === '' ? '' : Math.round(rrc * cellRate(rc >= 0 ? disp[i][rc] : '')))
-          };
-        });
-      } catch (e) { log_('Закуп', 'WARN', `Источник «${name}», лист «${sheetName}»: ${e.message}`); }
-    });
-    sources[name] = map;
+    const r = readPriceBook_(o.book, src, usd);
+    sources[name] = r.map;
+    i.updated = o.updated; i.file = o.file;
+    const limit = Number(src['Годен, дней']) || maxAge, age = ageDays_(o.updated);
+    if (r.warn.length && !Object.keys(r.map).length) i.bad = r.warn.join('; ');
+    else if (limit > 0 && age !== '' && age > limit) i.bad = `не обновлялся ${Math.floor(age)} дн. (с ${fmtDay_(o.updated)}), срок — ${limit} дн.`;
+    i.status = i.bad ? '⚠ ' + i.bad : '✅ OK' + (r.warn.length ? ' (' + r.warn.join('; ') + ')' : '');
   });
 
-  // 1С: строки — product_id, колонки — даты. Берём сегодняшнюю, иначе последнюю доступную.
-  const c1 = {}, has1c = {};
-  const id1c = String(cfg_('COST_1C_SHEET_ID', '')).trim();
-  if (id1c) {
-    let data = [];
-    try {
-      data = SpreadsheetApp.openById(id1c).getSheetByName(String(cfg_('COST_1C_SHEET', 'Prices'))).getDataRange().getValues();
-    } catch (e) {
-      noAccess.push(`Таблица 1С: https://docs.google.com/spreadsheets/d/${id1c}`);
-    }
-    const tz = Session.getScriptTimeZone(), today = Utilities.formatDate(new Date(), tz, 'yyyy.MM.dd');
-    const hdr = (data[0] || []).map(v => v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy.MM.dd') : String(v).trim());
-    // самая свежая дата не позже сегодня, в которой есть цены: колонку нового дня в 1С создают раньше, чем заполняют
-    const filled = i => data.slice(1).some(row => num_(row[i]) !== '');
-    const dates = hdr.map((v, i) => [v, i]).filter(([v]) => /^\d{4}\.\d{2}\.\d{2}$/.test(v) && v <= today).sort().reverse();
-    const hit = dates.find(([, i]) => filled(i));
-    let col = hit ? hit[1] : -1;
-    if (col >= 0) data.slice(1).forEach(row => {
-      const k = key_(row[0]);
-      if (k) has1c[k] = true;
-      const v = num_(row[col]);
-      if (v !== '' && k) c1[k] = v;
-    });
-    else if (data.length) log_('Закуп', 'WARN', 'В таблице 1С не найдена колонка с датой');
+  // 2. 1С и её свежесть
+  const c1 = read1C_();
+  let bad1c = c1.error;
+  if (!bad1c && c1.date) {
+    const age = ageDays_(new Date(c1.date.replace(/\./g, '-') + 'T00:00:00'));
+    const lim = Number(cfg_('COST_1C_MAX_AGE_DAYS', 3)) || 0;
+    if (lim > 0 && age !== '' && age > lim + 1) bad1c = `последние цены за ${c1.date}, это старше ${lim} дн. — выгрузка из 1С не обновляется`;
   }
+  if (c1.error && /нет доступа/.test(c1.error)) noAccess.push('Таблица 1С: ' + c1.error.replace('нет доступа: ', ''));
 
-  const m = readMain_(), cost = {}, rrc = {}, miss = [], notInPrice = [];
+  // 3. закуп по правилу каждого товара
+  const m = readMain_(), cost = {}, rrc = {}, miss = [], notInPrice = [], recs = [], history = [], used1c = [];
   m.rows.forEach(r => {
     const src = String(r['Источник закупа'] || '').trim();
     if (src.toLowerCase() === 'вручную') return;
-    const code = key_(r['Код в прайсе']);
-    // цену ищем только в своём прайсе: коды у поставщиков пересекаются, в чужом прайсе под тем же кодом — другой товар.
-    // Источник «1С» — только себестоимость из 1С
+    const code = key_(r['Код в прайсе']), pid = key_(r['Product ID']);
+    // цену ищем только в своём прайсе: коды у поставщиков пересекаются, в чужом прайсе под тем же кодом — другой товар
     const s = sources[src] && sources[src][code];
-    if (sources[src] && code && !s) notInPrice.push(`${r['Артикул']} (${src}, код ${code})`);
-    const vals = [s && s.cost, c1[key_(r['Product ID'])]].filter(v => typeof v === 'number' && v > 0);
-    cost[r._row] = vals.length ? Math.max(...vals) : '';
+    const srcOk = sources[src] && !/^⛔/.test(info[src].status);   // недоступный прайс — одна строка про источник, не про каждый товар
+    if (info[src]) info[src].count++;
+    const p = s && typeof s.cost === 'number' && s.cost > 0 ? s.cost : null;
+    const c = typeof c1.c1[pid] === 'number' && c1.c1[pid] > 0 ? c1.c1[pid] : null;
+    const rule = src.toLowerCase() === '1с' || src.toLowerCase() === '1c' ? '1С'
+      : costRule_(r['Правило закупа']) || (info[src] && info[src].rule) || defRule;
+    let val = null, from = '';
+    if (rule === '1С' && c) { val = c; from = '1С'; }
+    else if (rule === 'Прайс' && p) { val = p; from = src; }
+    else if (p && c) { val = Math.max(p, c); from = p >= c ? src : '1С'; }
+    else if (p) { val = p; from = src; }
+    else if (c) { val = c; from = '1С'; }
+    if (from === '1С') used1c.push(r['Артикул']);
+    cost[r._row] = val || '';
     if (s && s.rrc !== '') rrc[r._row] = s.rrc;
-    if (!vals.length) {
-      const pid = key_(r['Product ID']);
-      const why = !code ? 'нет «Кода в прайсе»'
-        : !sources[src] ? `источник «${src || '—'}» не настроен`
-        : `кода нет в прайсе «${src}»`;
-      const why1c = !id1c ? 'таблица 1С не указана' : !has1c[pid] ? 'в 1С нет строки по product_id' : 'в 1С пусто на выбранную дату';
-      miss.push(`${r['Артикул']} (${why}; ${why1c})`);
+
+    const why = [];
+    if (srcOk && code && !s) { notInPrice.push(`${r['Артикул']} (${src}, код ${code})`); why.push(`кода ${code} нет в прайсе «${src}»`); }
+    if (srcOk && !code) why.push('не заполнен «Код в прайсе»');
+    if (!sources[src] && src && rule !== '1С') why.push(`источник «${src}» не настроен на листе «Источники закупа»`);
+    if (!val) {
+      const why1c = !c1.id ? 'таблица 1С не указана' : !c1.has[pid] ? 'в 1С нет строки по product_id' : 'в 1С пусто на выбранную дату';
+      miss.push(`${r['Артикул']} (${why.join(', ') || 'нет цены'}; ${why1c})`);
+      why.unshift('⛔ нет закупа');
+    } else if (rule === '1С' && !c) why.push('правило «1С», но в 1С цены нет — взят прайс');
+    else if (rule === 'Прайс' && !p && c) why.push('правило «Прайс», но в прайсе цены нет — взята 1С');
+    if (p && c && Math.abs(p - c) / Math.min(p, c) > diffAlert) why.push(`прайс и 1С расходятся на ${Math.round(Math.abs(p / c - 1) * 100)}%`);
+    const old = num_(r['Закуп, ₽']);
+    if (val && old !== '' && old > 0 && val !== old) {
+      history.push([new Date(), r['Артикул'], old, val, val / old - 1, from === '1С' ? '1С ' + c1.date : 'прайс ' + from, rule]);
+      if (Math.abs(val / old - 1) > jumpAlert) why.push(`закуп изменился на ${Math.round((val / old - 1) * 100)}%`);
     }
+    recs.push({ r, rule, old, val, p, c, why });
   });
   mainPatch_(m, 'Закуп, ₽', cost); mainPatch_(m, 'РРЦ, ₽', rrc);
+
+  // источники с проблемами — отдельными строками сверху листа проверки
+  const srcChecks = Object.keys(info).filter(n => info[n].bad && info[n].count)
+    .map(n => `«${n}» (товаров: ${info[n].count}): ${info[n].bad}`);
+  if (bad1c && used1c.length) srcChecks.push(`1С (товаров с закупом из 1С: ${used1c.length}): ${bad1c}`);
+
+  writeSourceStatus_(srcTbl, info);
+  appendCostHistory_(history);
+  const toCheck = writeCostCheck_(srcChecks, recs);
+
   if (noAccess.length) log_('Закуп', 'WARN', 'НЕТ ДОСТУПА к таблицам (откройте ссылку и запросите доступ для своего аккаунта):\n' + noAccess.join('\n'));
   if (notInPrice.length) log_('Закуп', 'WARN', `Кода нет в своём прайсе, взят только закуп из 1С (${notInPrice.length}) — проверьте «Код в прайсе» и «Источник закупа»: ${notInPrice.join(', ')}`);
   if (miss.length) log_('Закуп', 'WARN', `Нет закупа (${miss.length}): ${miss.join(', ')}`);
-  return `обновлено: ${Object.keys(cost).length - miss.length}, без закупа: ${miss.length}` +
+  return `обновлено: ${Object.keys(cost).length - miss.length}, без закупа: ${miss.length}, изменилось: ${history.length}` +
+    ` | на проверку: ${toCheck}${srcChecks.length ? `, проблемных источников: ${srcChecks.length}` : ''} — лист «${COST_CHECK_SHEET}»` +
     (noAccess.length ? ` | нет доступа к ${noAccess.length} табл. — ссылки в «Логе»` : '');
+}
+
+/** Лист «Источники закупа»: дата обновления, статус и число товаров у каждого прайса */
+function writeSourceStatus_(tbl, info) {
+  if (!tbl.sh || !tbl.rows.length) return;
+  const upd = {}, st = {}, cnt = {};
+  Object.keys(info).forEach(n => { const i = info[n]; upd[i.row] = i.updated || ''; st[i.row] = (i.file ? `файл «${i.file}» · ` : '') + i.status; cnt[i.row] = i.count; });
+  [['Обновлён', upd], ['Статус', st], ['Товаров', cnt]].forEach(([col, patch]) => {
+    if (tbl.h.indexOf(col) >= 0) patchColumn_(tbl.sh, tbl.h, col, patch, 2);
+  });
+  if (tbl.h.indexOf('Обновлён') >= 0) tbl.sh.getRange(2, tbl.h.indexOf('Обновлён') + 1, tbl.sh.getLastRow() - 1, 1).setNumberFormat('dd.MM.yyyy HH:mm');
+}
+
+/** Лист отчёта: создаёт, если нет, и ставит шапку */
+function reportSheet_(name, cols) {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(name);
+  if (!sh) sh = ss.insertSheet(name);
+  if (sh.getLastColumn() < cols.length || headersAt_(sh, 1).slice(0, cols.length).join('|') !== cols.join('|')) {
+    sh.getRange(1, 1, 1, cols.length).setValues([cols]).setFontWeight('bold')
+      .setBackground(OZ_UI.header).setFontColor(OZ_UI.headerText).setFontSize(9).setWrap(true);
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+/** «История закупа»: дописывает изменения, старое сверх COST_HISTORY_MAX удаляет */
+function appendCostHistory_(rows) {
+  if (!rows.length) return;
+  const sh = reportSheet_(COST_HISTORY_SHEET, COST_HISTORY_COLS);
+  const at = sh.getLastRow() + 1;
+  sh.getRange(at, 1, rows.length, COST_HISTORY_COLS.length).setValues(rows);
+  sh.getRange(at, 1, rows.length, 1).setNumberFormat('dd.MM.yyyy HH:mm');
+  sh.getRange(at, 3, rows.length, 2).setNumberFormat('#,##0');
+  sh.getRange(at, 5, rows.length, 1).setNumberFormat('+0%;-0%');
+  const extra = sh.getLastRow() - 1 - COST_HISTORY_MAX;
+  if (extra > 0) sh.deleteRows(2, extra);
+}
+
+/**
+ * «Закупы на проверку»: только то, что требует внимания человека.
+ * Галочка «Принято» убирает строку из списка, пока у товара не изменятся закуп, прайс или 1С.
+ * Скачок закупа держится в списке до галочки, даже если закуп потом обновляли ещё раз.
+ * Возвращает число товаров, ждущих проверки.
+ */
+function writeCostCheck_(srcChecks, recs) {
+  const sh = reportSheet_(COST_CHECK_SHEET, COST_CHECK_COLS);
+  const C = n => COST_CHECK_COLS.indexOf(n);
+  const fp = (art, val, p, c) => [key_(art), val || '', p || '', c || ''].join('|');
+
+  // что было на листе раньше: принятые строки и непринятые скачки закупа
+  const accepted = {}, prevJump = {};
+  if (sh.getLastRow() > 1) {
+    sh.getRange(2, 1, sh.getLastRow() - 1, COST_CHECK_COLS.length).getValues().forEach(x => {
+      const art = x[C('Артикул')];
+      if (!art || String(art).indexOf('★') === 0) return;
+      if (x[C('Принято')] === true) accepted[fp(art, x[C('Закуп стал, ₽')], x[C('Прайс, ₽')], x[C('1С, ₽')])] = true;
+      else if (/изменился/.test(x[C('Что проверить')]) && num_(x[C('Закуп был, ₽')]) !== '') prevJump[key_(art)] = { was: num_(x[C('Закуп был, ₽')]), now: num_(x[C('Закуп стал, ₽')]) };
+    });
+  }
+
+  // маржа после нового закупа (формулы листа Ozon пересчитываются после записи)
+  SpreadsheetApp.flush();
+  const margin = {};
+  readMain_().rows.forEach(r => { margin[key_(r['Артикул'])] = r['Маржа, %']; });
+  const minM = Number(cfg_('MIN_MARGIN', 0.10));
+
+  const rows = [];
+  srcChecks.forEach(t => rows.push(['★ Источник', t, '', '', '', '', '', '', '', '', '', '', 'обновите прайс / выгрузку или дайте доступ', false]));
+  // скачки с прошлого раза, ещё не принятые, остаются в списке
+  const byArt = {};
+  recs.forEach(x => byArt[key_(x.r['Артикул'])] = x);
+  Object.keys(prevJump).forEach(k => {
+    const j = prevJump[k], x = byArt[k];
+    if (x && j.now === x.old && j.was !== x.val) {
+      x.old = j.was;
+      x.why = x.why.filter(w => !/изменился/.test(w));
+      x.why.push(`закуп изменился на ${Math.round((x.val / j.was - 1) * 100)}%`);
+    }
+  });
+  let waiting = 0;
+  const done = [];
+  recs.forEach(x => {
+    const mg = margin[key_(x.r['Артикул'])];
+    if (x.val && x.old !== x.val && typeof mg === 'number' && mg < minM) x.why.push(`с новым закупом маржа ${Math.round(mg * 100)}% — ниже минимума`);
+  });
+  recs.filter(x => x.why.length).forEach(x => {
+    const mg = margin[key_(x.r['Артикул'])];
+    const ok = !!accepted[fp(x.r['Артикул'], x.val, x.p, x.c)];
+    const row = [x.r['Артикул'], x.r['Название'] || '', x.r['Категория'] || '', x.r['Источник закупа'] || '', x.rule,
+      x.old === '' ? '' : x.old, x.val || '', x.old > 0 && x.val ? x.val / x.old - 1 : '', x.p || '', x.c || '',
+      x.p && x.c ? x.p / x.c - 1 : '', typeof mg === 'number' ? mg : '', x.why.join('; '), ok];
+    (ok ? done : rows).push(row);
+    if (!ok) waiting++;
+  });
+  const all = rows.concat(done);
+
+  if (sh.getFilter()) sh.getFilter().remove();             // clear() фильтр не снимает
+  if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).clear();
+  if (all.length) {
+    const n = all.length;
+    sh.getRange(2, 1, n, COST_CHECK_COLS.length).setValues(all);
+    [C('Закуп был, ₽'), C('Закуп стал, ₽'), C('Прайс, ₽'), C('1С, ₽')].forEach(i => sh.getRange(2, i + 1, n, 1).setNumberFormat('#,##0'));
+    [C('Изменение, %'), C('Прайс к 1С, %')].forEach(i => sh.getRange(2, i + 1, n, 1).setNumberFormat('+0%;-0%'));
+    sh.getRange(2, C('Маржа, %') + 1, n, 1).setNumberFormat('0%');
+    sh.getRange(2, C('Принято') + 1, n, 1).insertCheckboxes();
+    if (srcChecks.length) sh.getRange(2, 1, srcChecks.length, COST_CHECK_COLS.length).setBackground(OZ_UI.warn).setFontColor(OZ_UI.warnText).setFontWeight('bold');
+    if (done.length) sh.getRange(2 + rows.length, 1, done.length, COST_CHECK_COLS.length).setFontColor('#9aa0a6');
+    const v = sh.getRange(2, C('Что проверить') + 1, n, 1);
+    sh.setConditionalFormatRules([SpreadsheetApp.newConditionalFormatRule().whenTextStartsWith('⛔')
+      .setBackground(OZ_UI.bad).setFontColor(OZ_UI.badText).setRanges([v]).build()]);
+    sh.getRange(1, 1, n + 1, COST_CHECK_COLS.length).createFilter();
+  }
+  sh.setColumnWidth(1, 160); sh.setColumnWidth(2, 260); sh.setColumnWidth(C('Что проверить') + 1, 360);
+  return waiting;
 }
 
 /* ---------- Источник закупа по формулам старой таблицы (разовая операция) ----------
@@ -1428,7 +1702,7 @@ function onOpen() {
     .addSeparator()
     .addSubMenu(ui.createMenu('Обновить данные')
       .addItem('Тарифы и цены Ozon', 'syncTariffs')
-      .addItem('Закуп', 'importCosts')
+      .addItem('Закуп (и список «Закупы на проверку»)', 'importCosts')
       .addItem('Новые товары из Ozon', 'addMissingProducts')
       .addItem('Источники закупа из старой таблицы', 'sourcesFromOldTable'))
     .addSubMenu(ui.createMenu('Отчёты')
@@ -1996,8 +2270,10 @@ var PF_COLS = ['SKU', 'Артикул', 'Название', 'Категория'
   'Удержания план, %', 'Разница, п.п.', 'Закуп проданного, ₽', 'Прибыль факт, ₽', 'Прибыль факт/шт, ₽',
   'Маржа факт, %', 'Прибыль план/шт, ₽', 'Факт − план/шт, ₽', 'Обновлено', 'Логистика факт/шт, ₽'];
 
+// новые колонки — только в конец: скрипт и ваши записи опираются на порядок первых девяти
 var SOURCE_COLS = ['Источник', 'ID таблицы', 'Лист', 'Колонка кода', 'Колонка закупа', 'Колонка РРЦ',
-  'Валюта', 'Товаров', 'Комментарий'];
+  'Валюта', 'Товаров', 'Комментарий', 'Правило', 'Папка', 'Файл содержит', 'Годен, дней', 'Ответственный',
+  'Обновлён', 'Статус'];
 
 var MAIN_COLS = ['Артикул', 'SKU', 'Product ID', 'Код в прайсе', 'Название', 'Категория', 'Поставщик', 'Источник закупа',
   'Остаток FBS', 'Закуп, ₽', 'РРЦ, ₽', 'Комиссия, %', 'Логистика, ₽',
@@ -2006,7 +2282,7 @@ var MAIN_COLS = ['Артикул', 'SKU', 'Product ID', 'Код в прайсе'
   'Цена продажи, ₽', 'Цена вручную', 'Цена на Ozon, ₽', 'Мин. цена в акциях, ₽', 'В акции', 'Цена факт., ₽', 'Прибыль, ₽', 'Маржа, %',
   'ROI, %', 'Статус', 'Прибыль факт/шт, ₽', 'Маржа факт, %', 'Конкурент Ozon, ₽', 'Другие площадки, ₽',
   'Разница с Ozon', 'Позиция на Ozon', 'Отправить', 'Цена к отправке, ₽', 'Зачёркнутая, ₽', 'min_price, ₽', 'Результат',
-  'Логистика: основа'];   // в конце, чтобы не сдвигать AN/AO
+  'Логистика: основа', 'Правило закупа'];   // в конце, чтобы не сдвигать AN/AO
 
 var SETTINGS_DEFAULTS = [
   ['MIN_MARGIN', 0.10, 'Минимальная маржа: «Мин. цена», min_price в Ozon и стартовая цена новых товаров.'],
@@ -2026,6 +2302,11 @@ var SETTINGS_DEFAULTS = [
   ['ACTIONS_EXCLUDE', 'FBO|для складов', 'Акции, которые массовые кнопки пропускают (регулярное выражение).'],
   ['COST_1C_SHEET_ID', '', 'Таблица с себестоимостью из 1С.'],
   ['COST_1C_SHEET', 'Prices', 'Имя листа в таблице 1С.'],
+  ['COST_RULE_DEFAULT', 'MAX', 'Правило закупа, если не задано ни у товара, ни у прайса: MAX — дороже из прайса и 1С, Прайс — цена поставщика, 1С — себестоимость по приходу.'],
+  ['PRICE_MAX_AGE_DAYS', 30, 'Прайс не обновлялся дольше стольких дней — в «Закупы на проверку». 0 — не проверять. Свой срок прайсу — в «Источниках закупа».'],
+  ['COST_1C_MAX_AGE_DAYS', 3, 'Последние цены в выгрузке 1С старше стольких дней — в «Закупы на проверку».'],
+  ['COST_DIFF_ALERT', 0.15, 'Прайс и 1С расходятся больше чем на эту долю — товар в «Закупы на проверку».'],
+  ['COST_JUMP_ALERT', 0.15, 'Закуп изменился больше чем на эту долю — товар в «Закупы на проверку» до галочки «Принято».'],
   ['ORDERS_DAYS', 60, 'За сколько дней считать заказы для «Хватит, дней».'],
   ['DEFAULT_BUYOUT', 0.92, 'Выкуп по умолчанию, если по товару мало данных.'],
   ['BUYOUT_DAYS', 180, 'За сколько дней считать выкуп.'],
@@ -2042,15 +2323,15 @@ var SETTINGS_DEFAULTS = [
 // ключи, которые скрипт больше не читает: «Обновить структуру таблицы» убирает их из «Настроек»
 var SETTINGS_OBSOLETE = ['ALLOW_BELOW_MIN', 'OLD_TABLE_ID'];
 
-var MAIN_WIDTHS = { 'Логистика: основа': 90, 'В акции': 60, 'Артикул': 150, 'Название': 300, 'Категория': 110, 'Поставщик': 100, 'Источник закупа': 120,
+var MAIN_WIDTHS = { 'Логистика: основа': 90, 'Правило закупа': 90, 'В акции': 60, 'Артикул': 150, 'Название': 300, 'Категория': 110, 'Поставщик': 100, 'Источник закупа': 120,
   'Статус': 105, 'Позиция на Ozon': 110, 'Выкуп: основа': 110, 'Результат': 210 };
 var MAIN_PCT = ['Комиссия, %', 'Выкуп, %', 'Эквайринг, %', 'Маржа, %', 'ROI, %', 'Маржа факт, %', 'Разница с Ozon'];
 var MAIN_MONEY = ['Закуп, ₽', 'РРЦ, ₽', 'Логистика, ₽', 'Обработка Ozon, ₽', 'Посл. миля, ₽', 'Возврат, ₽',
   'Логистика с выкупом, ₽', 'Упаковка, ₽', 'Затраты фикс., ₽', 'Цена безубыточности, ₽', 'Мин. цена, ₽', 'Порог акций, ₽',
   'Цена продажи, ₽', 'Цена вручную', 'Цена на Ozon, ₽', 'Мин. цена в акциях, ₽', 'Цена факт., ₽', 'Прибыль, ₽',
   'Прибыль факт/шт, ₽', 'Конкурент Ozon, ₽', 'Другие площадки, ₽', 'Цена к отправке, ₽', 'Зачёркнутая, ₽', 'min_price, ₽'];
-var MAIN_INPUTS = ['Код в прайсе', 'Категория', 'Поставщик', 'Источник закупа', 'Цена продажи, ₽', 'Цена вручную', 'Отправить'];
-var MAIN_HIDE = ['SKU', 'Product ID', 'Код в прайсе', 'Поставщик', 'Источник закупа', 'РРЦ, ₽', 'Комиссия, %',
+var MAIN_INPUTS = ['Код в прайсе', 'Категория', 'Поставщик', 'Источник закупа', 'Правило закупа', 'Цена продажи, ₽', 'Цена вручную', 'Отправить'];
+var MAIN_HIDE = ['SKU', 'Product ID', 'Код в прайсе', 'Поставщик', 'Источник закупа', 'Правило закупа', 'РРЦ, ₽', 'Комиссия, %',
   'Логистика, ₽', 'Обработка Ozon, ₽', 'Посл. миля, ₽', 'Выкуп, %', 'Выкуп: основа', 'Возврат, ₽',
   'Логистика с выкупом, ₽', 'Упаковка, ₽', 'Эквайринг, %', 'Мин. цена в акциях, ₽',
   'Конкурент Ozon, ₽', 'Другие площадки, ₽', 'Цена к отправке, ₽', 'Зачёркнутая, ₽', 'min_price, ₽'];
@@ -2237,6 +2518,9 @@ function styleMain_(sh, h, W) {
     .forEach(n => colRange(n).setHorizontalAlignment('left'));
   paintColumns_(sh, h);
   colRange('Результат').setFontColor(OZ_UI.muted).setFontSize(9);
+  if (h.indexOf('Правило закупа') >= 0) colRange('Правило закупа').setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(['MAX', 'Прайс', '1С'], true).setAllowInvalid(true).build())
+    .setHorizontalAlignment('center');
   toggleColumns_(true);
 
   // подсветка: фон только у «Статуса», дальше — цвет текста
@@ -2361,19 +2645,30 @@ function ensureSources_() {
   data.forEach((r, i) => { const id = String(r[1]).trim(); if (id) byId[id] = i; });
   let fixed = 0, added = 0;
   SOURCES_DEFAULTS.forEach(d => {
-    const row = [d[0], d[1], d[2], d[3], d[4], d[5], d[6], '', ''];
+    const row = [d[0], d[1], d[2], d[3], d[4], d[5], d[6]].concat(SOURCE_COLS.slice(7).map(() => ''));
     if (byId[d[1]] !== undefined) {
       const i = byId[d[1]];
       row[0] = String(data[i][0]).trim() || d[0];          // название оставляем ваше
+      for (let j = 7; j < SOURCE_COLS.length; j++) row[j] = data[i][j];   // комментарий, правило, папку и т. д. — тоже
       data[i] = row;
       fixed++;
     } else { data.push(row); added++; }
   });
   // остальные ваши строки: колонка «Валюта» могла съехать — чиним на RUB, если там не валюта
-  data.forEach(r => { if (['RUB', 'USD'].indexOf(String(r[6]).trim().toUpperCase()) < 0) r[6] = 'RUB'; r[7] = ''; r[8] = r[8] || ''; });
+  data.forEach(r => { if (['RUB', 'USD'].indexOf(String(r[6]).trim().toUpperCase()) < 0) r[6] = 'RUB'; });
   if (last > 1) sh.getRange(2, 1, last - 1, SOURCE_COLS.length).clearContent();
   if (data.length) sh.getRange(2, 1, data.length, SOURCE_COLS.length).setValues(data);
   sh.getRange(1, 1, 1, SOURCE_COLS.length).setValues([SOURCE_COLS]);
+  const n = Math.max(sh.getMaxRows() - 1, 1), c = name => SOURCE_COLS.indexOf(name) + 1;
+  sh.getRange(2, c('Правило'), n, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(['MAX', 'Прайс', '1С'], true).setAllowInvalid(true).build());
+  sh.getRange(2, c('Обновлён'), n, 1).setNumberFormat('dd.MM.yyyy HH:mm');
+  [['Правило', 'Какую цену брать для товаров этого прайса, если у товара не задано своё правило: MAX — дороже из прайса и 1С, Прайс — цена поставщика, 1С — себестоимость по приходу. Пусто — COST_RULE_DEFAULT из «Настроек».'],
+   ['Папка', 'Для поставщиков, которые присылают файлы: ссылка на папку Google Диска. Кладите туда новый прайс (Excel или Google Таблица) — скрипт возьмёт самый свежий. Если заполнено, «ID таблицы» не нужен.'],
+   ['Файл содержит', 'Если в одной папке прайсы нескольких поставщиков: часть названия файла этого поставщика, например «CAS».'],
+   ['Годен, дней', 'Через сколько дней без обновления прайс считается устаревшим. Пусто — PRICE_MAX_AGE_DAYS из «Настроек», 0 — не проверять.'],
+   ['Обновлён', 'Заполняет скрипт: когда прайс последний раз менялся.'],
+   ['Статус', 'Заполняет скрипт при обновлении закупа.']].forEach(([name, note]) => sh.getRange(1, c(name)).setNote(note));
   return `прайсов: ${data.length} (обновлено ${fixed}, добавлено ${added})`;
 }
 

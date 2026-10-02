@@ -319,6 +319,7 @@ function priceBook(rows) { const sh = new Sheet(rows); sh.name = 'Лист1'; re
 test('закуп: код ищется только в своём прайсе, чужой прайс не подставляется', () => {
   const env = load({ settings: { COST_1C_SHEET_ID: '' } });
   const { ctx } = env;
+  ctx.writeCostCheck_ = () => 0; ctx.appendCostHistory_ = () => {};
   ctx.SpreadsheetApp.openById = id => ({ ID_POS: priceBook([['4865', 21678], ['4863', 16300]]), ID_MER: priceBook([['9999', 500]]) })[id];
   ctx.readTable_ = () => ({ rows: SOURCES });
   ctx.readMain_ = () => ({ rows: [
@@ -412,6 +413,7 @@ test('Ozon-карты нет ни в колонках, ни в формулах'
 test('закуп 1С: пустая колонка сегодняшней даты пропускается, берётся последняя заполненная', () => {
   const env = load({ settings: { COST_1C_SHEET_ID: 'ID_1C', COST_1C_SHEET: 'Prices' } });
   const { ctx } = env;
+  ctx.writeCostCheck_ = () => 0; ctx.appendCostHistory_ = () => {};
   const today = '2026.10.01';
   ctx.Utilities.formatDate = () => today;
   const c1 = new Sheet([['product_id', '2026.09.30', today], [1, 500, ''], [2, 700, '']]);
@@ -507,4 +509,129 @@ test('отчёты снимают старый фильтр перед новы�
     const body = SRC.slice(SRC.indexOf(`function ${fn}()`)).split('\nfunction ')[0];
     assert.ok(body.indexOf('getFilter().remove()') >= 0 && body.indexOf('getFilter().remove()') < body.indexOf('createFilter'), fn);
   });
+});
+
+/* ---------- Закуп: правила, проверка, папка с прайсами ---------- */
+const DAY = 864e5;
+/** Прогон importCosts_: прайс POSCENTER (код → цена), 1С (product_id → цена), товары; возвращает закуп, проверку и историю */
+function runCosts({ price = {}, c1 = {}, rows, sources = SOURCES, settings = {}, drive }) {
+  const env = load({ settings: Object.assign({ COST_1C_SHEET_ID: 'ID_1C', COST_1C_SHEET: 'Prices' }, settings) });
+  const { ctx } = env;
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '.');
+  ctx.Utilities.formatDate = () => today;
+  const c1Sheet = new Sheet([['product_id', today]].concat(Object.keys(c1).map(k => [Number(k), c1[k]])));
+  ctx.SpreadsheetApp.openById = id => ({ ID_1C: { getSheetByName: () => c1Sheet },
+    ID_POS: priceBook(Object.keys(price).map(k => [k, price[k]])), ID_MER: priceBook([]) })[id];
+  if (drive) ctx.DriveApp = drive;
+  ctx.readTable_ = () => ({ rows: sources });
+  ctx.readMain_ = () => ({ rows });
+  const cost = {}, out = {};
+  ctx.mainPatch_ = (m, name, patch) => { if (name === 'Закуп, ₽') Object.assign(cost, patch); };
+  ctx.writeCostCheck_ = (src, recs) => { out.src = src; out.recs = recs; return recs.filter(x => x.why.length).length; };
+  ctx.appendCostHistory_ = h => { out.history = h; };
+  out.msg = ctx.importCosts_();
+  const why = art => (out.recs.find(x => x.r['Артикул'] === art) || { why: [] }).why.join('; ');
+  return Object.assign(out, { cost: plain(cost), why, env });
+}
+const prod = (row, art, pid, extra) => Object.assign({ _row: row, 'Артикул': art, 'Источник закупа': 'Прайс POSCENTER', 'Код в прайсе': art, 'Product ID': pid }, extra);
+
+test('правило закупа: у товара → у прайса → по умолчанию MAX', () => {
+  const rows = [prod(3, 'a', 1), prod(4, 'b', 2, { 'Правило закупа': 'Прайс' }), prod(5, 'c', 3, { 'Правило закупа': '1С' }),
+    prod(6, 'd', 4, { 'Правило закупа': 'прайс' }), prod(7, 'e', 5, { 'Правило закупа': 'Прайс' })];
+  const price = { a: 800, b: 800, c: 800, d: 800 }, c1 = { 1: 1000, 2: 1000, 3: 1000, 4: 1000, 5: 1000 };
+  const r = runCosts({ price, c1, rows });
+  assert.deepEqual(r.cost, { 3: 1000, 4: 800, 5: 1000, 6: 800, 7: 1000 });
+  assert.match(r.why('e'), /правило «Прайс», но в прайсе цены нет — взята 1С/);
+  // правило прайса действует на все его товары без своего правила
+  const src = SOURCES.map(x => Object.assign({}, x, x['Источник'] === 'Прайс POSCENTER' ? { 'Правило': 'Прайс' } : {}));
+  assert.deepEqual(runCosts({ price, c1, rows: [prod(3, 'a', 1), prod(4, 'c', 3, { 'Правило закупа': '1С' })], sources: src }).cost, { 3: 800, 4: 1000 });
+});
+
+test('проверка: расхождение прайса и 1С, скачок закупа, история', () => {
+  const rows = [prod(3, 'a', 1, { 'Закуп, ₽': 1000 }), prod(4, 'b', 2, { 'Закуп, ₽': 500 }), prod(5, 'c', 3, { 'Закуп, ₽': 1000 })];
+  const r = runCosts({ price: { a: 1000, b: 800, c: 1050 }, c1: { 1: 700, 2: 790, 3: 1000 }, rows });
+  assert.match(r.why('a'), /прайс и 1С расходятся на 43%/);
+  assert.match(r.why('b'), /закуп изменился на 60%/);
+  assert.equal(r.why('c'), '', 'мелкие расхождения не шумят');
+  assert.deepEqual(plain(r.history.map(h => [h[1], h[2], h[3]])), [['b', 500, 800], ['c', 1000, 1050]]);
+});
+
+test('проверка: старый прайс — одна строка про источник, а не про каждый товар', () => {
+  const drive = { getFileById: () => ({ getLastUpdated: () => new Date(Date.now() - 40 * DAY) }) };
+  const r = runCosts({ price: { a: 100, b: 100 }, c1: {}, rows: [prod(3, 'a', 1), prod(4, 'b', 2)], drive });
+  assert.equal(r.src.length, 1);
+  assert.match(r.src[0], /«Прайс POSCENTER» \(товаров: 2\): не обновлялся 40 дн\..*срок — 30 дн\./);
+  assert.equal(r.why('a'), '');
+  // свой срок у прайса важнее общего
+  const src = SOURCES.map(x => Object.assign({}, x, { 'Годен, дней': 60 }));
+  assert.equal(runCosts({ price: { a: 100 }, rows: [prod(3, 'a', 1)], drive, sources: src }).src.length, 0);
+});
+
+test('проверка: нет доступа к прайсу — одна строка с источником, закуп из 1С', () => {
+  const src = [{ 'Источник': 'Прайс X', 'ID таблицы': 'NOPE', 'Лист': 'Лист1', 'Колонка кода': 'A', 'Колонка закупа': 'B' }];
+  const r = runCosts({ c1: { 1: 500 }, rows: [prod(3, 'a', 1, { 'Источник закупа': 'Прайс X' })], sources: src });
+  assert.deepEqual(r.cost, { 3: 500 });
+  assert.match(r.src[0], /«Прайс X» \(товаров: 1\): нет доступа/);
+  assert.equal(r.why('a'), '');
+});
+
+test('папка с прайсами: берётся самый свежий файл поставщика, копии скрипта пропускаются', () => {
+  const file = (id, name, days, mime) => ({ getId: () => id, getName: () => name, getMimeType: () => mime || 'application/vnd.google-apps.spreadsheet',
+    getLastUpdated: () => new Date(Date.now() - days * DAY) });
+  const files = [file('OLD', 'CAS прайс март', 20), file('NEW', 'CAS прайс апрель', 2), file('DORS', 'Dors', 0),
+    file('CONV', '[копия для скрипта] CAS', 0), file('PDF', 'CAS.pdf', 0, 'application/pdf')];
+  const drive = { getFolderById: () => ({ getName: () => 'Прайсы', getFiles: () => { let i = 0; return { hasNext: () => i < files.length, next: () => files[i++] }; } }) };
+  const src = [{ 'Источник': 'Прайс CAS', 'Папка': 'https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz', 'Файл содержит': 'cas',
+    'Лист': '', 'Колонка кода': 'A', 'Колонка закупа': 'B', 'Валюта': 'RUB' }];
+  const env = load({ settings: { COST_1C_SHEET_ID: '' } });
+  const { ctx } = env;
+  const opened = [];
+  ctx.DriveApp = drive;
+  ctx.SpreadsheetApp.openById = id => { opened.push(id); return priceBook([['k1', id === 'NEW' ? 222 : 111]]); };
+  ctx.readTable_ = () => ({ rows: src });
+  ctx.readMain_ = () => ({ rows: [prod(3, 'k1', 1, { 'Источник закупа': 'Прайс CAS' })] });
+  const cost = {};
+  ctx.mainPatch_ = (m, name, patch) => { if (name === 'Закуп, ₽') Object.assign(cost, patch); };
+  ctx.writeCostCheck_ = () => 0; ctx.appendCostHistory_ = () => {};
+  ctx.importCosts_();
+  assert.deepEqual(opened, ['NEW']);
+  assert.deepEqual(plain(cost), { 3: 222 });
+});
+
+test('ссылка вместо ID и правило закупа разных написаний', () => {
+  const { ctx } = load();
+  assert.equal(ctx.idFrom_('https://docs.google.com/spreadsheets/d/1wOJa0O7Rdxgh_Kyy_Gcvsfq-1xq_X6BVg2ytC4pRx1M/edit#gid=0'), '1wOJa0O7Rdxgh_Kyy_Gcvsfq-1xq_X6BVg2ytC4pRx1M');
+  assert.equal(ctx.idFrom_(' ID_POS '), 'ID_POS');
+  assert.deepEqual(['max', 'Макс', 'Прайс', '1C', '1с', '', 'ерунда'].map(ctx.costRule_), ['MAX', 'MAX', 'Прайс', '1С', '1С', '', '']);
+});
+
+/** Лист с заглушками оформления: неизвестные методы диапазона и листа ничего не делают */
+function fakeReportSheet(rows) {
+  const sh = new Sheet(rows);
+  const chain = target => new Proxy(target, { get: (t, p) => (p in t ? (typeof t[p] === 'function' ? t[p].bind(t) : t[p]) : () => chain(t)) });
+  const getRange = sh.getRange.bind(sh);
+  sh.getRange = (...a) => { const r = getRange(...a); r.clear = () => { for (let i = 0; i < r.nr; i++) for (let j = 0; j < r.nc; j++) sh.put(r.r + i, r.c + j, ''); return r; }; return chain(r); };
+  return chain(Object.assign(sh, { getFilter: () => null }));
+}
+
+test('лист проверки: «Принято» прячет строку, пока данные не изменятся; скачок держится до галочки', () => {
+  const { ctx } = load();
+  const C = vm.runInContext('COST_CHECK_COLS', ctx);
+  const row = o => C.map(c => (c in o ? o[c] : ''));
+  const sh = fakeReportSheet([C,
+    row({ 'Артикул': 'a', 'Закуп стал, ₽': 1000, 'Прайс, ₽': 1000, '1С, ₽': 700, 'Что проверить': 'прайс и 1С расходятся на 43%', 'Принято': true }),
+    row({ 'Артикул': 'b', 'Закуп был, ₽': 500, 'Закуп стал, ₽': 800, 'Что проверить': 'закуп изменился на 60%', 'Принято': false })]);
+  ctx.reportSheet_ = () => sh;
+  ctx.readMain_ = () => ({ rows: [] });
+  const rule = new Proxy({}, { get: (t, p) => () => (p === 'build' ? {} : rule) });
+  ctx.SpreadsheetApp.newConditionalFormatRule = () => rule;
+  const rec = (art, o) => Object.assign({ r: { 'Артикул': art }, rule: 'MAX', old: '', val: 0, p: 0, c: 0, why: [] }, o);
+  const n = ctx.writeCostCheck_([], [
+    rec('a', { old: 1000, val: 1000, p: 1000, c: 700, why: ['прайс и 1С расходятся на 43%'] }),   // принято, ничего не поменялось
+    rec('b', { old: 800, val: 800, p: 800, c: 790, why: [] }),                                      // скачок с прошлого раза
+    rec('c', { old: 1000, val: 1000, p: 1000, c: 600, why: ['прайс и 1С расходятся на 67%'] })]);
+  assert.equal(n, 2);
+  const out = sh.rows.slice(1).filter(r => r[0]).map(r => [r[0], r[C.indexOf('Закуп был, ₽')], r[C.indexOf('Что проверить')], r[C.indexOf('Принято')]]);
+  assert.deepEqual(out, [['b', 500, 'закуп изменился на 60%', false], ['c', 1000, 'прайс и 1С расходятся на 67%', false],
+    ['a', 1000, 'прайс и 1С расходятся на 43%', true]]);
 });
