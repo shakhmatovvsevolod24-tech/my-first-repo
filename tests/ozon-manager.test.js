@@ -109,10 +109,10 @@ const resultOf = (sh, art) => { const r = sh.rows.find(x => x[1] === art); retur
 const actionOf = (sh, art) => { const r = sh.rows.find(x => x[1] === art); return r[17]; };
 
 /* ---------- Меню ---------- */
-test('onOpen: четыре отдельных меню, у каждой кнопки есть функция', () => {
+test('onOpen: пять отдельных меню, у каждой кнопки есть функция', () => {
   const { ctx, menus } = load();
   ctx.onOpen();
-  assert.deepEqual(menus.map(m => m.name), ['💰 ЦЕНЫ', '🏷 АКЦИИ', '📦 ОСТАТКИ', '⚙ НАСТРОЙКИ']);
+  assert.deepEqual(menus.map(m => m.name), ['💰 ЦЕНЫ', '✍ РУЧНАЯ НАСТРОЙКА', '🏷 АКЦИИ', '📦 ОСТАТКИ', '⚙ НАСТРОЙКИ']);
   const flat = list => list.flatMap(i => i.sub ? flat(i.sub.items) : [i]);
   const items = menus.flatMap(m => flat(m.items).filter(i => i.fn));
   menus.forEach(m => assert.ok(m.items.filter(i => i.fn || i.sub).length <= 7, `в меню «${m.name}» больше 7 пунктов`));
@@ -124,6 +124,7 @@ test('onOpen: четыре отдельных меню, у каждой кноп
   assert.ok(labels.includes('Применить отметки с маржой от 10%'));
   assert.ok(labels.includes('Выгрузить цены по марже 12%'));
   assert.ok(labels.includes('Включить автообновление (каждые 5 мин)'));
+  assert.ok(labels.includes('Обновить закуп вручную у выделенных'));
   assert.equal(new Set(fns).size, fns.length, 'одна функция висит на двух кнопках');
 });
 
@@ -675,4 +676,80 @@ test('отключённые: аудит их не проверяет, стат�
   const F = ctx.mainFormulas_(cols, 3);
   const pid = '$' + ctx.letter_(cols.indexOf('Product ID') + 1) + '3';
   assert.ok(F['Статус'].startsWith(`=IF(${pid}="","⏸ отключён",`), F['Статус']);
+});
+
+/* ---------- Ручной закуп ---------- */
+test('закуп вручную: автообновление не перезаписывает, но показывает, если прайс ушёл', () => {
+  const rows = [prod(3, 'a', 1, { 'Закуп вручную': true, 'Закуп, ₽': 900 }), prod(4, 'b', 2, { 'Закуп вручную': true, 'Закуп, ₽': 900 }),
+    prod(5, 'c', 3)];
+  const r = runCosts({ price: { a: 950, b: 1200, c: 500 }, c1: { 1: 900, 2: 900, 3: 500 }, rows });
+  assert.deepEqual(r.cost, { 5: 500 }, 'ручной закуп остался как есть');
+  assert.equal(r.why('a'), '', 'расхождение 6% — не шумим');
+  assert.match(r.why('b'), /закуп задан вручную; в прайсе сейчас 1200 ₽ \(\+33%\)/);
+  assert.deepEqual(plain(r.history || []), [], 'ручные строки в историю автообновления не попадают');
+});
+
+/** Лист Ozon в песочнице: строка 2 — заголовки, товары с 3-й; выделение — строки sel */
+function manualEnv(rows, sel) {
+  const env = load({ settings: { DRY_RUN: true } });
+  const { ctx } = env;
+  const H = ['Артикул', 'Product ID', 'Закуп, ₽', 'Закуп вручную'];
+  const sheet = new Sheet([['Товар'], H].concat(rows.map(r => H.map(k => (k in r ? r[k] : '')))));
+  sheet.name = 'Ozon';
+  ctx.SpreadsheetApp.getActive = () => ({
+    getActiveSheet: () => sheet, getSheetByName: () => null, toast() {},
+    getActiveRangeList: () => ({ getRanges: () => sel.map(([a, b]) => ({ getRow: () => a, getLastRow: () => b })) })
+  });
+  ctx.readMain_ = () => ({ sh: sheet, h: H, rows: rows.map((r, i) => Object.assign({ _row: i + 3 }, r)) });
+  const patches = {}, history = [];
+  ctx.mainPatch_ = (m, name, patch) => { patches[name] = Object.assign(patches[name] || {}, patch); };
+  ctx.appendCostHistory_ = h => history.push(...h);
+  return Object.assign(env, { sheet, patches, history, H });
+}
+
+test('закуп вручную: правка ячейки + кнопка → галочка, история «было → стало»', () => {
+  const env = manualEnv([{ 'Артикул': 'a', 'Product ID': 1, 'Закуп, ₽': 900 }, { 'Артикул': 'b', 'Product ID': 2, 'Закуп, ₽': 500 }], [[3, 3]]);
+  // пользователь поменял закуп у «a» с 1000 на 900: onEdit запомнил старое значение
+  env.ctx.onEdit({ oldValue: '1000', range: { getNumRows: () => 1, getNumColumns: () => 1, getRow: () => 3, getColumn: () => 3, getSheet: () => env.sheet } });
+  const msg = env.ctx.manualCostFromSelection_();
+  assert.deepEqual(plain(env.patches['Закуп вручную']), { 3: true }, 'отмечен только выделенный товар');
+  assert.deepEqual(plain(env.history.map(h => [h[1], h[2], h[3], h[5]])), [['a', 1000, 900, 'вручную']]);
+  assert.match(msg, /закуп вручную: 1 — a: 1000 → 900 ₽/);
+  assert.equal(env.docProps.getProperty('MANUAL_COST_OLD'), '{}', 'запомненное значение использовано и стёрто');
+});
+
+test('закуп вручную: пустая ячейка, отключённый товар и выделение не на листе Ozon', () => {
+  const env = manualEnv([{ 'Артикул': 'a', 'Product ID': 1, 'Закуп, ₽': '' }, { 'Артикул': 'off', 'Product ID': '', 'Закуп, ₽': 700 }], [[3, 4]]);
+  assert.match(env.ctx.manualCostFromSelection_(), /в «Закуп, ₽» не число: a/);
+  assert.equal(env.patches['Закуп вручную'], undefined, 'отключённый товар не трогаем');
+  env.sheet.name = 'Бог акций';
+  assert.throws(() => env.ctx.manualCostFromSelection_(), /перейдите на лист «Ozon»/);
+});
+
+test('вернуть автоматический закуп: снимает галочку и сразу обновляет закуп', () => {
+  const env = manualEnv([{ 'Артикул': 'a', 'Product ID': 1, 'Закуп, ₽': 900, 'Закуп вручную': true },
+    { 'Артикул': 'b', 'Product ID': 2, 'Закуп, ₽': 500, 'Закуп вручную': false }], [[3, 4]]);
+  env.ctx.importCosts_ = () => 'обновлено: 2';
+  const msg = env.ctx.manualCostRevert_();
+  assert.deepEqual(plain(env.patches['Закуп вручную']), { 3: false });
+  assert.match(msg, /автоматический закуп возвращён: 1 \(a\) \| обновлено: 2/);
+});
+
+/* ---------- Новые товары из Ozon ---------- */
+test('новые товары: отключённая строка снова в продаже — получает Product ID, архив не трогаем', () => {
+  const { ctx } = load();
+  const rows = [{ _row: 3, 'Артикул': 'X', 'Product ID': '' }, { _row: 4, 'Артикул': 'Y', 'Product ID': '' }, { _row: 5, 'Артикул': 'Z', 'Product ID': 5 }];
+  ctx.readMain_ = () => ({ h: [], rows });
+  ctx.ozonAll_ = () => [{ offer_id: 'X', product_id: 77, archived: false }, { offer_id: 'Y', product_id: 88, archived: true },
+    { offer_id: 'Z', product_id: 5, archived: false }];
+  ctx.ozon_ = (p, body) => ({ items: body.product_id.map(id => ({ id, sku: id * 100, name: 'n' + id })) });
+  const patches = {}; let regrouped = false;
+  ctx.mainPatch_ = (m, name, patch) => { patches[name] = Object.assign(patches[name] || {}, patch); };
+  ctx.regroup_ = () => { regrouped = true; };
+  ctx.syncTariffs_ = ctx.syncStocks_ = ctx.importCosts_ = () => '';
+  const msg = ctx.addMissingProducts_();
+  assert.deepEqual(plain(patches['Product ID']), { 3: 77 });
+  assert.deepEqual(plain(patches['SKU']), { 3: 7700 });
+  assert.equal(regrouped, false, 'новых строк нет — лист не перестраиваем');
+  assert.match(msg, /снова в продаже \(вернули Product ID\): 1 — X/);
 });

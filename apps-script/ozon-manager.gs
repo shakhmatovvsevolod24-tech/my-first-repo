@@ -314,7 +314,7 @@ function regroup_(extra) {
 
   // оформление: товарные строки — как прежняя товарная строка, заголовки блоков — тёмные
   if (fmtRow) sh.getRange(fmtRow, 1, 1, W).copyFormatToRange(sh, 1, W, MAIN_FIRST, lastRow);
-  const checkCols = ['Отправить', 'Цена вручную'].filter(x => h.indexOf(x) >= 0).map(x => c(x));
+  const checkCols = ['Отправить', 'Цена вручную', 'Закуп вручную'].filter(x => h.indexOf(x) >= 0).map(x => c(x));
   checkCols.forEach(cc => sh.getRange(MAIN_FIRST, cc, n, 1).clearDataValidations());
   blocks.forEach(b => {
     sh.getRange(b.hr, 1, 1, W).setBackground('#C7D7EA').setFontColor('#0B2545').setFontWeight('bold');
@@ -350,18 +350,31 @@ function addMissingProducts_() {
   const haveArt = new Set(m.rows.map(r => key_(r['Артикул']))), havePid = new Set(m.rows.map(r => key_(r['Product ID'])));
   const list = ozonAll_('/v3/product/list', { filter: { visibility: 'ALL' }, limit: 1000 },
     r => ({ items: r.result.items, next: r.result.last_id }), 'last_id');
+  // отключённый товар (строка без Product ID) снова в продаже под тем же артикулом — возвращаем ему Product ID
+  const offByArt = {};
+  m.rows.forEach(r => { if (isOff_(r)) offByArt[key_(r['Артикул'])] = r; });
+  const revive = list.filter(x => !x.archived && offByArt[key_(x.offer_id)] && !havePid.has(key_(x.product_id)));
   const fresh = list.filter(x => !x.archived && !haveArt.has(key_(x.offer_id)) && !havePid.has(key_(x.product_id)));
-  if (!fresh.length) return 'новых товаров нет — таблица совпадает с кабинетом';
+  if (!fresh.length && !revive.length) return 'новых товаров нет — таблица совпадает с кабинетом';
 
   const info = {};
-  chunk_(fresh.map(x => x.product_id), 1000).forEach(part =>
+  chunk_(fresh.concat(revive).map(x => x.product_id), 1000).forEach(part =>
     (ozon_('/v3/product/info/list', { product_id: part }).items || []).forEach(it => info[it.id] = it));
+  const skuOf = it => it.sku || (it.sources && it.sources[0] && it.sources[0].sku) || '';
+  if (revive.length) {
+    const pid = {}, sku = {}, res = {};
+    revive.forEach(x => {
+      const r = offByArt[key_(x.offer_id)];
+      pid[r._row] = x.product_id; sku[r._row] = skuOf(info[x.product_id] || {}); res[r._row] = '↩ снова в продаже на Ozon';
+    });
+    mainPatch_(m, 'Product ID', pid); mainPatch_(m, 'SKU', sku); mainPatch_(m, 'Результат', res);
+  }
   const extra = fresh.map(x => {
     const it = info[x.product_id] || {};
     return { 'Артикул': String(x.offer_id), 'Product ID': x.product_id, 'Название': it.name || '',
-      'SKU': it.sku || (it.sources && it.sources[0] && it.sources[0].sku) || '', 'Категория': '', 'Отправить': false };
+      'SKU': skuOf(it), 'Категория': '', 'Отправить': false };
   });
-  regroup_(extra);
+  if (extra.length) regroup_(extra);
   syncTariffs_(); syncStocks_(); importCosts_();
   SpreadsheetApp.flush();
 
@@ -375,7 +388,8 @@ function addMissingProducts_() {
     else res[r._row] = '🆕 нет закупа: укажите «Код в прайсе» и «Источник закупа»';
   });
   mainPatch_(m2, 'Цена продажи, ₽', price); mainPatch_(m2, 'Отправить', send); mainPatch_(m2, 'Результат', res);
-  return `добавлено: ${fresh.length}, цена назначена: ${Object.keys(price).length}, без закупа: ${fresh.length - Object.keys(price).length}`;
+  return `добавлено: ${fresh.length}, цена назначена: ${Object.keys(price).length}, без закупа: ${fresh.length - Object.keys(price).length}` +
+    (revive.length ? `, снова в продаже (вернули Product ID): ${revive.length} — ${revive.slice(0, 10).map(x => x.offer_id).join(', ')}` : '');
 }
 
 /* ---------- Тарифы, текущие цены, конкуренты ---------- */
@@ -684,9 +698,18 @@ function importCosts_() {
     else if (p && c) { val = Math.max(p, c); from = p >= c ? src : '1С'; }
     else if (p) { val = p; from = src; }
     else if (c) { val = c; from = '1С'; }
+    if (s && s.rrc !== '') rrc[r._row] = s.rrc;
+    if (r['Закуп вручную'] === true) {          // закуп исправлен вручную: не перезаписываем, но показываем, если прайс или 1С ушли
+      const mv = num_(r['Закуп, ₽']), mwhy = [];
+      if (!(mv > 0)) mwhy.push('⛔ отмечен «Закуп вручную», но в «Закуп, ₽» не число');
+      else if (val && Math.abs(val / mv - 1) > diffAlert) {
+        mwhy.push(`закуп задан вручную; ${from === '1С' ? 'в 1С' : 'в прайсе'} сейчас ${val} ₽ (${val > mv ? '+' : ''}${Math.round((val / mv - 1) * 100)}%)`);
+      }
+      recs.push({ r, rule: 'вручную', old: mv, val: mv, p, c, why: mwhy });
+      return;
+    }
     if (from === '1С') used1c.push(r['Артикул']);
     cost[r._row] = val || '';
-    if (s && s.rrc !== '') rrc[r._row] = s.rrc;
 
     const why = [];
     if (srcOk && code && !s) { notInPrice.push(`${r['Артикул']} (${src}, код ${code})`); why.push(`кода ${code} нет в прайсе «${src}»`); }
@@ -839,6 +862,104 @@ function writeCostCheck_(srcChecks, recs) {
   }
   sh.setColumnWidth(1, 160); sh.setColumnWidth(2, 260); sh.setColumnWidth(C('Что проверить') + 1, 360);
   return waiting;
+}
+
+/* ---------- Ручной закуп: исправить закуп у выделенных товаров ----------
+ * Меняете «Закуп, ₽» прямо в ячейке и жмёте «✍ РУЧНАЯ НАСТРОЙКА → Обновить закуп вручную у выделенных»:
+ * у строки ставится галочка «Закуп вручную», изменение пишется в «Историю закупа»,
+ * и автообновление закупа эту строку больше не перезаписывает, пока галочку не снимут.
+ * «Было» запоминает onEdit — значение ячейки до ручной правки.
+ */
+var MANUAL_COST_OLD_KEY = 'MANUAL_COST_OLD';
+var MANUAL_CONFIRM_OVER = 20;                     // столько выделенных товаров и больше — сначала спрашиваем
+
+function manualCostFromSelection() { run_('Закуп вручную', manualCostFromSelection_); }
+function manualCostRevert()        { run_('Вернуть автоматический закуп', manualCostRevert_); }
+
+/** Товарные строки листа Ozon под выделением (все выделенные диапазоны); null — выделение не на листе Ozon */
+function selectedMainRows_() {
+  const ss = SpreadsheetApp.getActive(), sh = ss.getActiveSheet();
+  if (!sh || sh.getName() !== SHEETS.MAIN) return null;
+  const list = ss.getActiveRangeList(), nums = {};
+  (list ? list.getRanges() : []).forEach(rg => {
+    for (let i = Math.max(rg.getRow(), MAIN_FIRST); i <= rg.getLastRow(); i++) nums[i] = true;
+  });
+  const m = readMain_();
+  return { m, rows: m.rows.filter(r => nums[r._row] && !isOff_(r)) };
+}
+
+function needManualCol_(m) {
+  if (m.h.indexOf('Закуп вручную') < 0) {
+    throw new Error('нет колонки «Закуп вручную»: выполните ⚙ НАСТРОЙКИ → Подключение и структура → Обновить структуру таблицы');
+  }
+}
+
+function askYes_(title, text) {
+  const ui = SpreadsheetApp.getUi();
+  return ui.alert(title, text, ui.ButtonSet.YES_NO) === ui.Button.YES;
+}
+
+function manualCostFromSelection_() {
+  const sel = selectedMainRows_();
+  if (!sel) throw new Error(`перейдите на лист «${SHEETS.MAIN}», выделите ячейку «Закуп, ₽» товара и нажмите кнопку ещё раз`);
+  needManualCol_(sel.m);
+  if (!sel.rows.length) return 'выделите на листе Ozon ячейку «Закуп, ₽» товара (или его строку)';
+  if (sel.rows.length >= MANUAL_CONFIRM_OVER &&
+      !askYes_('Закуп вручную', `Выделено товаров: ${sel.rows.length}. Зафиксировать закуп вручную у всех?`)) return 'отменено';
+
+  const props = PropertiesService.getDocumentProperties();
+  const saved = JSON.parse(props.getProperty(MANUAL_COST_OLD_KEY) || '{}');
+  const flag = {}, history = [], done = [], bad = [];
+  sel.rows.forEach(r => {
+    const art = r['Артикул'], v = num_(r['Закуп, ₽']);
+    if (!(v > 0)) { bad.push(art); return; }
+    const s = saved[r._row], fresh = s && key_(s.art) === key_(art) && Date.now() - (s.t || 0) < 864e5;
+    const was = fresh ? num_(s.old) : '';
+    flag[r._row] = true;
+    if (was !== v) history.push([new Date(), art, was, v, was > 0 ? v / was - 1 : '', 'вручную', '—']);
+    done.push(`${art}: ${was > 0 && was !== v ? `${was} → ` : ''}${v} ₽`);
+    delete saved[r._row];
+  });
+  if (!done.length) return `в «Закуп, ₽» не число: ${bad.join(', ')} — впишите закуп и нажмите ещё раз`;
+  mainPatch_(sel.m, 'Закуп вручную', flag);
+  appendCostHistory_(history);
+  props.setProperty(MANUAL_COST_OLD_KEY, JSON.stringify(saved));
+  return `закуп вручную: ${done.length} — ${done.slice(0, 10).join('; ')}${done.length > 10 ? '…' : ''}. ` +
+    'Автообновление закупа их больше не трогает; вернуть — «Вернуть автоматический закуп у выделенных»' +
+    (bad.length ? ` | пропущены, в «Закуп, ₽» не число: ${bad.join(', ')}` : '');
+}
+
+function manualCostRevert_() {
+  const sel = selectedMainRows_();
+  if (!sel) throw new Error(`перейдите на лист «${SHEETS.MAIN}», выделите товары и нажмите кнопку ещё раз`);
+  needManualCol_(sel.m);
+  const flag = {}, arts = [];
+  sel.rows.forEach(r => { if (r['Закуп вручную'] === true) { flag[r._row] = false; arts.push(r['Артикул']); } });
+  if (!arts.length) return 'у выделенных товаров закуп и так автоматический';
+  if (arts.length >= MANUAL_CONFIRM_OVER &&
+      !askYes_('Вернуть автоматический закуп', `Товаров с ручным закупом в выделении: ${arts.length}. Вернуть всем автоматический?`)) return 'отменено';
+  mainPatch_(sel.m, 'Закуп вручную', flag);
+  SpreadsheetApp.flush();
+  return `автоматический закуп возвращён: ${arts.length} (${arts.slice(0, 10).join(', ')}${arts.length > 10 ? '…' : ''}) | ` + importCosts_();
+}
+
+/** Простой триггер: запоминает закуп до ручной правки ячейки, чтобы «Закуп вручную» записал в историю «было → стало» */
+function onEdit(e) {
+  try {
+    const rg = e && e.range;
+    if (!rg || e.oldValue === undefined || rg.getNumRows() !== 1 || rg.getNumColumns() !== 1 || rg.getRow() < MAIN_FIRST) return;
+    const sh = rg.getSheet();
+    if (sh.getName() !== SHEETS.MAIN) return;
+    const h = headersAt_(sh, MAIN_HDR_ROW);
+    if (rg.getColumn() !== h.indexOf('Закуп, ₽') + 1) return;
+    const props = PropertiesService.getDocumentProperties();
+    const saved = JSON.parse(props.getProperty(MANUAL_COST_OLD_KEY) || '{}');
+    const art = String(sh.getRange(rg.getRow(), h.indexOf('Артикул') + 1).getValue());
+    const s = saved[rg.getRow()];
+    // значение до первой правки; запомненное больше суток назад (кнопку так и не нажали) — устарело
+    if (!s || key_(s.art) !== key_(art) || !(Date.now() - (s.t || 0) < 864e5)) saved[rg.getRow()] = { art, old: e.oldValue, t: Date.now() };
+    props.setProperty(MANUAL_COST_OLD_KEY, JSON.stringify(saved));
+  } catch (err) {}
 }
 
 /* ---------- Источник закупа по формулам старой таблицы (разовая операция) ----------
@@ -1724,6 +1845,11 @@ function onOpen() {
       .addItem('Поиск демпинга', 'dumpingReport'))
     .addToUi();
 
+  ui.createMenu('✍ РУЧНАЯ НАСТРОЙКА')
+    .addItem('Обновить закуп вручную у выделенных', 'manualCostFromSelection')
+    .addItem('Вернуть автоматический закуп у выделенных', 'manualCostRevert')
+    .addToUi();
+
   ui.createMenu('🏷 АКЦИИ')
     .addItem('Обновить лист «Бог акций»', 'refreshActions')
     .addSeparator()
@@ -1795,6 +1921,7 @@ function syncAll() {
     const out = [];
     const step = (name, fn) => { try { out.push(`${name}: ${fn()}`); } catch (e) { out.push(`${name}: ОШИБКА ${e.message}`); log_(name, 'ERROR', e.stack || e); } };
     step('Курс', updateUsdRate_);
+    step('Новые товары', addMissingProducts_);   // новые карточки из кабинета — сразу в таблицу
     step('Тарифы', syncTariffs_);
     step('Остатки', syncStocks_);
     step('Закуп', importCosts_);
@@ -2292,7 +2419,7 @@ var MAIN_COLS = ['Артикул', 'SKU', 'Product ID', 'Код в прайсе'
   'Цена продажи, ₽', 'Цена вручную', 'Цена на Ozon, ₽', 'Мин. цена в акциях, ₽', 'В акции', 'Цена факт., ₽', 'Прибыль, ₽', 'Маржа, %',
   'ROI, %', 'Статус', 'Прибыль факт/шт, ₽', 'Маржа факт, %', 'Конкурент Ozon, ₽', 'Другие площадки, ₽',
   'Разница с Ozon', 'Позиция на Ozon', 'Отправить', 'Цена к отправке, ₽', 'Зачёркнутая, ₽', 'min_price, ₽', 'Результат',
-  'Логистика: основа', 'Правило закупа'];   // в конце, чтобы не сдвигать AN/AO
+  'Логистика: основа', 'Правило закупа', 'Закуп вручную'];   // в конце, чтобы не сдвигать AN/AO
 
 var SETTINGS_DEFAULTS = [
   ['MIN_MARGIN', 0.10, 'Минимальная маржа: «Мин. цена», min_price в Ozon и стартовая цена новых товаров.'],
@@ -2333,14 +2460,15 @@ var SETTINGS_DEFAULTS = [
 // ключи, которые скрипт больше не читает: «Обновить структуру таблицы» убирает их из «Настроек»
 var SETTINGS_OBSOLETE = ['ALLOW_BELOW_MIN', 'OLD_TABLE_ID'];
 
-var MAIN_WIDTHS = { 'Логистика: основа': 90, 'Правило закупа': 90, 'В акции': 60, 'Артикул': 150, 'Название': 300, 'Категория': 110, 'Поставщик': 100, 'Источник закупа': 120,
+var MAIN_WIDTHS = { 'Логистика: основа': 90, 'Правило закупа': 90, 'Закуп вручную': 80,'В акции': 60, 'Артикул': 150, 'Название': 300, 'Категория': 110, 'Поставщик': 100, 'Источник закупа': 120,
   'Статус': 105, 'Позиция на Ozon': 110, 'Выкуп: основа': 110, 'Результат': 210 };
 var MAIN_PCT = ['Комиссия, %', 'Выкуп, %', 'Эквайринг, %', 'Маржа, %', 'ROI, %', 'Маржа факт, %', 'Разница с Ozon'];
 var MAIN_MONEY = ['Закуп, ₽', 'РРЦ, ₽', 'Логистика, ₽', 'Обработка Ozon, ₽', 'Посл. миля, ₽', 'Возврат, ₽',
   'Логистика с выкупом, ₽', 'Упаковка, ₽', 'Затраты фикс., ₽', 'Цена безубыточности, ₽', 'Мин. цена, ₽', 'Порог акций, ₽',
   'Цена продажи, ₽', 'Цена вручную', 'Цена на Ozon, ₽', 'Мин. цена в акциях, ₽', 'Цена факт., ₽', 'Прибыль, ₽',
   'Прибыль факт/шт, ₽', 'Конкурент Ozon, ₽', 'Другие площадки, ₽', 'Цена к отправке, ₽', 'Зачёркнутая, ₽', 'min_price, ₽'];
-var MAIN_INPUTS = ['Код в прайсе', 'Категория', 'Поставщик', 'Источник закупа', 'Правило закупа', 'Цена продажи, ₽', 'Цена вручную', 'Отправить'];
+var MAIN_INPUTS = ['Код в прайсе', 'Категория', 'Поставщик', 'Источник закупа', 'Правило закупа', 'Цена продажи, ₽', 'Цена вручную', 'Отправить',
+  'Закуп вручную'];
 var MAIN_HIDE = ['SKU', 'Product ID', 'Код в прайсе', 'Поставщик', 'Источник закупа', 'Правило закупа', 'РРЦ, ₽', 'Комиссия, %',
   'Логистика, ₽', 'Обработка Ozon, ₽', 'Посл. миля, ₽', 'Выкуп, %', 'Выкуп: основа', 'Возврат, ₽',
   'Логистика с выкупом, ₽', 'Упаковка, ₽', 'Эквайринг, %', 'Мин. цена в акциях, ₽',
