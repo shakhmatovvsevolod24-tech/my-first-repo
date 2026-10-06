@@ -125,6 +125,9 @@ test('onOpen: пять отдельных меню, у каждой кнопки
   assert.ok(labels.includes('Выгрузить цены по марже 12%'));
   assert.ok(labels.includes('Включить автообновление (каждые 5 мин)'));
   assert.ok(labels.includes('Обновить закуп вручную у выделенных'));
+  const manual = menus.find(m => m.name === '✍ РУЧНАЯ НАСТРОЙКА');
+  assert.equal(manual.items[0].fn, 'addMissingProducts', 'загрузка новых товаров — первой кнопкой в «Ручной настройке»');
+  assert.equal(manual.items[0].label, 'Загрузить новые товары в таблицу');
   assert.equal(new Set(fns).size, fns.length, 'одна функция висит на двух кнопках');
 });
 
@@ -752,4 +755,14 @@ test('новые товары: отключённая строка снова в
   assert.deepEqual(plain(patches['SKU']), { 3: 7700 });
   assert.equal(regrouped, false, 'новых строк нет — лист не перестраиваем');
   assert.match(msg, /снова в продаже \(вернули Product ID\): 1 — X/);
+});
+
+test('«Обновить всё» новые товары в таблицу не загружает — только кнопкой', () => {
+  const { ctx } = load({ settings: { AUTO_REMOVE_FROM_ACTIONS: false } });
+  const called = [];
+  ['updateUsdRate_', 'syncTariffs_', 'syncStocks_', 'importCosts_', 'syncOrders60_', 'syncBuyout_', 'syncFinance_',
+    'refreshActions_', 'runAudit_', 'dumpingReport_', 'addMissingProducts_'].forEach(fn => { ctx[fn] = () => { called.push(fn); return 'ok'; }; });
+  ctx.syncAll();
+  assert.ok(called.includes('importCosts_'), called.join(', '));
+  assert.ok(!called.includes('addMissingProducts_'), 'новые товары заводятся только по кнопке');
 });

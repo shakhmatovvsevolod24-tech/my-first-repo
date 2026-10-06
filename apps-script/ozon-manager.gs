@@ -233,7 +233,7 @@ function run_(title, fn) {
  *  ГЛАВНЫЙ ЛИСТ «Ozon»: блоки по категориям, добавление товаров,
  *  тарифы, остатки, закуп, заказы
  * ===================================================================== */
-function addMissingProducts() { run_('Добавить новые товары', addMissingProducts_); }
+function addMissingProducts() { run_('Загрузить новые товары', addMissingProducts_); }   // только по кнопке, в «Обновить всё» не входит
 function regroupByCategory()  { run_('Разложить по блокам', () => regroup_([])); }
 function syncTariffs()        { run_('Тарифы и цены', syncTariffs_); }
 function syncStocks()         { run_('Остатки FBS', syncStocks_); }
@@ -1834,7 +1834,6 @@ function onOpen() {
     .addSubMenu(ui.createMenu('Обновить данные')
       .addItem('Тарифы и цены Ozon', 'syncTariffs')
       .addItem('Закуп (и список «Закупы на проверку»)', 'importCosts')
-      .addItem('Новые товары из Ozon', 'addMissingProducts')
       .addItem('Источники закупа из старой таблицы', 'sourcesFromOldTable'))
     .addSubMenu(ui.createMenu('Отчёты')
       .addItem('Разобрать расчёт по товару', 'explainProduct')
@@ -1846,6 +1845,8 @@ function onOpen() {
     .addToUi();
 
   ui.createMenu('✍ РУЧНАЯ НАСТРОЙКА')
+    .addItem('Загрузить новые товары в таблицу', 'addMissingProducts')
+    .addSeparator()
     .addItem('Обновить закуп вручную у выделенных', 'manualCostFromSelection')
     .addItem('Вернуть автоматический закуп у выделенных', 'manualCostRevert')
     .addToUi();
@@ -1921,7 +1922,6 @@ function syncAll() {
     const out = [];
     const step = (name, fn) => { try { out.push(`${name}: ${fn()}`); } catch (e) { out.push(`${name}: ОШИБКА ${e.message}`); log_(name, 'ERROR', e.stack || e); } };
     step('Курс', updateUsdRate_);
-    step('Новые товары', addMissingProducts_);   // новые карточки из кабинета — сразу в таблицу
     step('Тарифы', syncTariffs_);
     step('Остатки', syncStocks_);
     step('Закуп', importCosts_);
