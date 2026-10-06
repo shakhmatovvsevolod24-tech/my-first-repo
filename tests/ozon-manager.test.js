@@ -872,3 +872,32 @@ test('загрузить новые товары: у строк дата заг�
   assert.ok(Math.abs(extra[0]['Добавлен'].getTime() - Date.now()) < 5000, 'дата загрузки — сейчас');
   assert.match(msg, /добавлено: 1 \(наверху листа, в «🆕 Новые товары»\)/);
 });
+
+/* ---------- План-факт ---------- */
+test('план-факт: у строк «БЕЗ ТОВАРА» видна статья списания, у товаров формула остаётся', () => {
+  const { ctx } = load({ settings: { FACT_DAYS: 1 } });
+  ctx.financeTypes_ = () => ({ 3: 'Оплата за клик' });
+  ctx.ozon_ = () => ({ accruals: [
+    { accrued_category: 'POSTING', total_amount: { amount: '500' }, posting: { products: [{ sku: 111, quantity: 1,
+      commission: { sale_amount: { amount: '1000' }, sale_commission: { amount: '-400' } },
+      delivery: { services: [], total_accrued: { amount: '-100' } } }] } },
+    { accrued_category: 'NON_ITEM', total_amount: { amount: '-50' }, non_item_fee: { type_id: 3, accrued: { amount: '-50' } } }
+  ], last_id: '' });
+  const H = vm.runInContext('PF_COLS', ctx);
+  const sh = new Sheet([H]);
+  ctx.sheet_ = () => sh;
+  // как настоящий writeTable_: колонка «Название» — формула поиска товара во всех строках
+  ctx.writeTable_ = (name, objs) => objs.forEach((o, i) => H.forEach((k, j) =>
+    sh.put(i + 2, j + 1, k === 'Название' ? '=IFERROR(INDEX(Ozon!E:E,…))' : (o[k] === undefined ? '' : o[k]))));
+  ctx.syncFinance_();
+  const name = H.indexOf('Название') + 1;
+  assert.equal(sh.cell(3, 1), 'БЕЗ ТОВАРА');
+  assert.equal(sh.cell(3, name), 'Оплата за клик');
+  assert.equal(sh.cell(2, name), '=IFERROR(INDEX(Ozon!E:E,…))', 'строка 2 — шаблон формул, её не трогаем');
+});
+
+test('факт на листе Ozon (AJ, AK) — в служебных колонках', () => {
+  const { ctx } = load();
+  const hide = vm.runInContext('MAIN_HIDE', ctx);
+  assert.ok(hide.includes('Прибыль факт/шт, ₽') && hide.includes('Маржа факт, %'));
+});
