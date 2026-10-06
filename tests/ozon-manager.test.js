@@ -761,8 +761,114 @@ test('«Обновить всё» новые товары в таблицу не
   const { ctx } = load({ settings: { AUTO_REMOVE_FROM_ACTIONS: false } });
   const called = [];
   ['updateUsdRate_', 'syncTariffs_', 'syncStocks_', 'importCosts_', 'syncOrders60_', 'syncBuyout_', 'syncFinance_',
-    'refreshActions_', 'runAudit_', 'dumpingReport_', 'addMissingProducts_'].forEach(fn => { ctx[fn] = () => { called.push(fn); return 'ok'; }; });
+    'refreshActions_', 'runAudit_', 'dumpingReport_', 'addMissingProducts_', 'settleBlocks_'].forEach(fn => { ctx[fn] = () => { called.push(fn); return 'ok'; }; });
   ctx.syncAll();
   assert.ok(called.includes('importCosts_'), called.join(', '));
   assert.ok(!called.includes('addMissingProducts_'), 'новые товары заводятся только по кнопке');
+  assert.equal(called[called.length - 1], 'settleBlocks_', 'раскладка по категориям — последним шагом: перестройка листа долгая');
+});
+
+/* ---------- Блок «🆕 Новые товары» наверху и категории ---------- */
+const HOUR = 3600e3;
+/** Лист Ozon для раскладки: колонка A — строки блоков «▌ …» и артикулы; byArt — поля товаров */
+function blocksEnv(layout, byArt, settings) {
+  const env = load({ settings });
+  const sheet = new Sheet([['Товар'], ['Артикул']].concat(layout.map(a => [a])));
+  const rows = [];
+  layout.forEach((a, i) => { if (!a.startsWith('▌')) rows.push(Object.assign({ _row: i + 3, 'Артикул': a }, byArt[a])); });
+  env.ctx.readMain_ = () => ({ sh: sheet, h: ['Артикул', 'Категория', 'Добавлен', 'Результат'], rows });
+  const patches = {}; let regrouped = 0;
+  env.ctx.mainPatch_ = (m, name, patch) => { patches[name] = Object.assign(patches[name] || {}, patch); };
+  env.ctx.regroup_ = () => { regrouped++; return 'ok'; };
+  env.ctx.ozon_ = () => { throw new Error('нет сети'); };
+  return Object.assign(env, { sheet, rows, patches, regrouped: () => regrouped });
+}
+
+test('новые товары: сутки наверху (категория уже угадана), потом — в свою категорию', () => {
+  const { ctx, logs } = load({ settings: { NEW_PRODUCTS_DAYS: 1 } });
+  ctx.ozon_ = () => { throw new Error('нет сети'); };
+  const now = Date.now();
+  const rows = [
+    { 'Артикул': 'w1', 'Product ID': 11, 'Название': 'Весы торговые CAS ER', 'Категория': 'Весы' },
+    { 'Артикул': 'w2', 'Название': 'Весы фасовочные M-ER', 'Категория': 'Весы' },
+    { 'Артикул': 's1', 'Название': 'Сканер штрих кода Mertech', 'Категория': 'Сканеры' },
+    { 'Артикул': 'new', 'Product ID': 14, 'Название': 'Весы фасовочные CAS', 'Категория': '', 'Добавлен': new Date(now - HOUR) },
+    { 'Артикул': 'old', 'Название': 'Сканер штрих кода проводной', 'Категория': '', 'Добавлен': new Date(now - 2 * DAY) },
+    { 'Артикул': 'odd', 'Название': 'Игольчатый пистолет', 'Категория': '' }
+  ];
+  const plan = ctx.planBlocks_(rows, now);
+  assert.deepEqual(plain(plan.blocks.map(b => [b.cat, b.items.map(r => r['Артикул']).sort()])),
+    [['🆕 Новые товары', ['new']], ['Весы', ['w1', 'w2']], ['Сканеры', ['old', 's1']], ['Без категории', ['odd']]],
+    'новые — первым блоком, провисевший срок — в своей категории, непохожий ни на что — «Без категории»');
+  assert.equal(rows[3]['Категория'], 'Весы', 'у нового товара категория видна заранее');
+  assert.deepEqual(plain(plan.guessed), { new: 'Весы', old: 'Сканеры', odd: 'Без категории' });
+  assert.ok(logs.some(l => /\[WARN\] Категории: данных Ozon нет/.test(l)), 'Ozon не ответил — угадали по названиям');
+});
+
+test('категория по типу товара в Ozon, даже если название ни на что не похоже', () => {
+  const { ctx } = load();
+  const calls = [];
+  ctx.ozon_ = (p, body) => { calls.push(p); return { items: body.product_id.map(id => ({ id, type_id: id < 100 ? 7 : 9, description_category_id: 1 })) }; };
+  const rows = [
+    { 'Артикул': 'a', 'Product ID': 1, 'Название': 'Счетчик банкнот Mertech', 'Категория': 'Детекторы и счетчики' },
+    { 'Артикул': 'b', 'Product ID': 101, 'Название': 'Принтер этикеток Godex', 'Категория': 'Термопринтеры' },
+    { 'Артикул': 'x', 'Product ID': 2, 'Название': 'Pro 40 mini', 'Категория': '' }
+  ];
+  ctx.planBlocks_(rows, Date.now());
+  assert.equal(rows[2]['Категория'], 'Детекторы и счетчики');
+  assert.deepEqual(calls, ['/v3/product/info/list'], 'один запрос на все товары');
+});
+
+test('NEW_PRODUCTS_DAYS = 0: новые товары сразу в своей категории', () => {
+  const { ctx } = load({ settings: { NEW_PRODUCTS_DAYS: 0 } });
+  const rows = [{ 'Артикул': 'a', 'Категория': 'Весы', 'Добавлен': new Date() }];
+  assert.deepEqual(plain(ctx.planBlocks_(rows, Date.now()).blocks.map(b => b.cat)), ['Весы']);
+});
+
+test('ночная раскладка: провисевшие срок — в категорию, без категории — угадываем, остальное не трогаем', () => {
+  const now = Date.now();
+  const env = blocksEnv(['▌ Весы', 'w1', 'w2', '▌ 🆕 Новые товары', 'fresh', 'stale', 'legacy'], {
+    w1: { 'Название': 'Весы торговые CAS', 'Категория': 'Весы' },
+    w2: { 'Название': 'Весы фасовочные M-ER', 'Категория': 'Весы' },
+    fresh: { 'Название': 'Весы фасовочные', 'Категория': 'Весы', 'Добавлен': new Date(now - HOUR) },
+    stale: { 'Название': 'Весы торговые', 'Категория': 'Весы', 'Добавлен': new Date(now - 2 * DAY) },
+    legacy: { 'Название': 'Весы CAS', 'Категория': '' }
+  });
+  const msg = env.ctx.settleBlocks_();
+  assert.equal(env.regrouped(), 1);
+  assert.deepEqual(plain(env.patches['Категория']), { 9: 'Весы' }, 'угаданная категория записана в строку');
+  assert.equal(msg, 'переложено: 2 — stale → Весы, legacy → Весы');
+});
+
+test('ночная раскладка: всё на своих местах — лист не перестраиваем', () => {
+  const env = blocksEnv(['▌ 🆕 Новые товары', 'n', '▌ Весы', 'w'], {
+    n: { 'Категория': 'Весы', 'Добавлен': new Date(Date.now() - HOUR) }, w: { 'Категория': 'Весы' } });
+  assert.equal(env.ctx.settleBlocks_(), 'все товары на своих местах');
+  assert.equal(env.regrouped(), 0);
+});
+
+test('обновление структуры: загруженные раньше новые (🆕 в «Результате») остаются наверху ещё сутки', () => {
+  const env = blocksEnv(['▌ Весы', 'w', '▌ 🆕 Новые товары', 'today', 'legacy', 'dated'], {
+    w: { 'Категория': 'Весы', 'Результат': '🆕 цена по мин. марже — проверьте и отправьте' },
+    today: { 'Результат': '🆕 нет закупа: укажите «Код в прайсе» и «Источник закупа»' },
+    legacy: { 'Результат': 'ПРОВЕРКА: уйдёт 100' },
+    dated: { 'Результат': '🆕 цена по мин. марже', 'Добавлен': new Date(Date.now() - 3 * DAY) }
+  });
+  assert.equal(env.ctx.seedNewDates_(env.ctx.readMain_()), 1);
+  assert.deepEqual(Object.keys(env.patches['Добавлен']), ['6'], 'только «today»: в блоке новых, с 🆕 и без даты');
+});
+
+test('загрузить новые товары: у строк дата загрузки — встают наверх, в «🆕 Новые товары»', () => {
+  const { ctx } = load();
+  ctx.readMain_ = () => ({ h: [], rows: [{ _row: 3, 'Артикул': 'A', 'Product ID': 1 }] });
+  ctx.ozonAll_ = () => [{ offer_id: 'A', product_id: 1, archived: false }, { offer_id: 'B', product_id: 2, archived: false }];
+  ctx.ozon_ = (p, body) => ({ items: body.product_id.map(id => ({ id, sku: id * 10, name: 'n' + id })) });
+  let extra = null;
+  ctx.regroup_ = x => { extra = x; };
+  ctx.mainPatch_ = () => {};
+  ctx.syncTariffs_ = ctx.syncStocks_ = ctx.importCosts_ = () => '';
+  const msg = ctx.addMissingProducts_();
+  assert.deepEqual(extra.map(e => e['Артикул']), ['B']);
+  assert.ok(Math.abs(extra[0]['Добавлен'].getTime() - Date.now()) < 5000, 'дата загрузки — сейчас');
+  assert.match(msg, /добавлено: 1 \(наверху листа, в «🆕 Новые товары»\)/);
 });

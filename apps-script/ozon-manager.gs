@@ -16,7 +16,8 @@ var SHEETS = {
   TARIFFS: 'Тарифы', LOG: 'Лог'
 };
 var MAIN_HDR_ROW = 2, MAIN_FIRST = 3;          // лист Ozon: строка 1 — группы колонок, 2 — заголовки
-var NEW_BLOCK = '🆕 Новые товары';
+var NEW_BLOCK = '🆕 Новые товары';             // верх листа: товары, загруженные кнопкой, — NEW_PRODUCTS_DAYS дней
+var NO_CAT = 'Без категории';
 
 /* ---------- Ключи ---------- */
 function getCreds_() {
@@ -242,6 +243,84 @@ function syncOrders60()       { run_('Заказы', syncOrders60_); }
 function updateUsdRate()      { run_('Курс USD', updateUsdRate_); }
 
 var isBlockRow_ = v => String(v || '').startsWith('▌');
+var isDate_ = v => !!v && typeof v.getTime === 'function' && !isNaN(v.getTime());
+/** Категория товара; название блока новых товаров категорией не считается */
+function catOf_(r) { const c = String(r['Категория'] || '').trim(); return c === NEW_BLOCK ? '' : c; }
+/** Сколько дней новые товары стоят наверху; 0 — сразу в свою категорию */
+function newDays_() { const d = Number(cfg_('NEW_PRODUCTS_DAYS', 1)); return isFinite(d) && d >= 0 ? d : 1; }
+/** Граница «новизны»: товары, загруженные кнопкой позже неё, стоят в блоке «🆕 Новые товары» */
+function newSince_(now) { return now - newDays_() * 864e5; }
+var isNewRow_ = (r, since) => isDate_(r['Добавлен']) && r['Добавлен'].getTime() > since;
+
+/** Строка листа Ozon → блок, в котором она сейчас стоит */
+function mainBlockOf_(m) {
+  const last = m.sh.getLastRow(), at = {};
+  if (last < MAIN_FIRST) return at;
+  let blk = '';
+  m.sh.getRange(MAIN_FIRST, 1, last - MAIN_FIRST + 1, 1).getValues().forEach((v, i) => {
+    if (isBlockRow_(v[0])) blk = String(v[0]).replace(/^▌\s*/, '').trim(); else at[i + MAIN_FIRST] = blk;
+  });
+  return at;
+}
+
+/**
+ * Угадывает категорию товарам без неё — по трём самым похожим товарам, у которых категория есть.
+ * Похожесть — общие слова названия и артикула (редкие слова весят больше) и тот же тип и категория товара в Ozon.
+ * Ничего похожего — «Без категории». Проставляет r['Категория'], возвращает { артикул: категория }.
+ */
+var GUESS_MIN_SIM = 0.1;
+function guessCategories_(rows, all) {
+  const info = {};
+  try {
+    const pids = all.map(r => Number(r['Product ID'])).filter(p => p > 0);
+    chunk_(pids, 1000).forEach(part =>
+      (ozon_('/v3/product/info/list', { product_id: part }).items || []).forEach(it => { info[it.id] = it; }));
+  } catch (e) { log_('Категории', 'WARN', 'данных Ozon нет, угадываю только по названиям: ' + e.message); }
+  const words = r => {
+    const it = info[Number(r['Product ID'])] || {};
+    const text = `${r['Название'] || it.name || ''} ${r['Артикул'] || ''}`.toLowerCase().replace(/ё/g, 'е');
+    const w = new Set((text.match(/[a-zа-я0-9]+/g) || []).filter(x => x.length > 2 && !/^\d+$/.test(x)));
+    if (it.type_id) w.add('тип:' + it.type_id);
+    if (it.description_category_id) w.add('категория:' + it.description_category_id);
+    return w;
+  };
+  const ref = all.filter(r => catOf_(r)).map(r => ({ cat: catOf_(r), w: words(r) }));
+  const df = {};
+  ref.forEach(x => x.w.forEach(w => { df[w] = (df[w] || 0) + 1; }));
+  const idf = w => (df[w] ? Math.log(ref.length / df[w]) : 0);
+  const out = {};
+  rows.forEach(r => {
+    const q = words(r);
+    const top = ref.map(x => {
+      let both = 0, any = 0;
+      q.forEach(w => { const v = idf(w); any += v; if (x.w.has(w)) both += v; });
+      x.w.forEach(w => { if (!q.has(w)) any += idf(w); });
+      return { cat: x.cat, s: any > 0 ? both / any : 0 };
+    }).filter(x => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 3);
+    const vote = {};
+    top.forEach(x => { vote[x.cat] = (vote[x.cat] || 0) + x.s; });
+    const best = Object.keys(vote).sort((a, b) => vote[b] - vote[a])[0];
+    r['Категория'] = best && top[0].s >= GUESS_MIN_SIM ? best : NO_CAT;
+    out[r['Артикул']] = r['Категория'];
+  });
+  return out;
+}
+
+/**
+ * Раскладка товаров по блокам: «🆕 Новые товары» — сверху, дальше категории от больших к маленьким.
+ * Товарам без категории сначала угадывает её — у новых она видна заранее, пока они висят наверху.
+ */
+function planBlocks_(all, now) {
+  const homeless = all.filter(r => !catOf_(r));
+  const guessed = homeless.length ? guessCategories_(homeless, all) : {};
+  const since = newSince_(now), groups = {};
+  all.forEach(r => { const c = isNewRow_(r, since) ? NEW_BLOCK : catOf_(r); (groups[c] = groups[c] || []).push(r); });
+  const order = Object.keys(groups).filter(c => c !== NEW_BLOCK)
+    .sort((a, b) => groups[b].length - groups[a].length || a.localeCompare(b, 'ru'));
+  if (groups[NEW_BLOCK]) order.unshift(NEW_BLOCK);          // новые товары — в самом верху
+  const byName = (a, b) => String(a['Название'] || a['Артикул']).localeCompare(String(b['Название'] || b['Артикул']), 'ru');
+  return { blocks: order.map(cat => ({ cat, items: groups[cat].sort(byName) })), guessed };
+}
 
 /** Товарные строки листа Ozon (строки-заголовки блоков пропускаются) */
 function readMain_() {
@@ -267,17 +346,11 @@ function regroup_(extra) {
   if (!tpl.some(Boolean)) throw new Error('Не найдены формулы-шаблон на листе Ozon');
   const fmtRow = m.rows.length ? m.rows[0]._row : null;
   const all = m.rows.concat(extra || []);
-
-  const groups = {};
-  all.forEach(r => { const c = String(r['Категория'] || '').trim() || NEW_BLOCK; (groups[c] = groups[c] || []).push(r); });
-  const order = Object.keys(groups).filter(c => c !== NEW_BLOCK)
-    .sort((a, b) => groups[b].length - groups[a].length || a.localeCompare(b, 'ru'));
-  if (groups[NEW_BLOCK]) order.push(NEW_BLOCK);          // новые товары — в самом низу
+  const plan = planBlocks_(all, Date.now());
 
   const grid = [], blocks = [];
   let r = MAIN_FIRST;
-  order.forEach(cat => {
-    const items = groups[cat].sort((a, b) => String(a['Название'] || a['Артикул']).localeCompare(String(b['Название'] || b['Артикул']), 'ru'));
+  plan.blocks.forEach(({ cat, items }) => {
     blocks.push({ cat, hr: r, first: r + 1, last: r + items.length, n: items.length });
     grid.push(null); items.forEach(it => grid.push(it));
     r += items.length + 1;
@@ -297,6 +370,12 @@ function regroup_(extra) {
   // в строке категории — только её название; средняя маржа проставится значением после расчёта
   const hdr = {};
   blocks.forEach(b => { hdr[b.hr] = { 'Артикул': `▌ ${b.cat}` }; });
+  const nb = blocks.find(b => b.cat === NEW_BLOCK);
+  if (nb) {
+    const d = newDays_();
+    hdr[nb.hr]['Название'] = `здесь ${d === 1 ? 'сутки' : d + ' дн.'} после загрузки, потом ночное обновление переложит их ` +
+      'в категорию из колонки «Категория» — её можно поправить';
+  }
 
   h.forEach((name, j) => {
     const colVals = grid.map((it, i) => {
@@ -317,7 +396,9 @@ function regroup_(extra) {
   const checkCols = ['Отправить', 'Цена вручную', 'Закуп вручную'].filter(x => h.indexOf(x) >= 0).map(x => c(x));
   checkCols.forEach(cc => sh.getRange(MAIN_FIRST, cc, n, 1).clearDataValidations());
   blocks.forEach(b => {
-    sh.getRange(b.hr, 1, 1, W).setBackground('#C7D7EA').setFontColor('#0B2545').setFontWeight('bold');
+    const isNew = b.cat === NEW_BLOCK;                     // новые товары — зелёной полосой
+    sh.getRange(b.hr, 1, 1, W).setBackground(isNew ? OZ_UI.good : '#C7D7EA')
+      .setFontColor(isNew ? OZ_UI.goodText : '#0B2545').setFontWeight('bold');
     sh.getRange(b.first, 1, b.n, 1).shiftRowGroupDepth(1);
     checkCols.forEach(cc => sh.getRange(b.first, cc, b.n, 1).insertCheckboxes());
   });
@@ -341,7 +422,42 @@ function regroup_(extra) {
     rule.getRanges().map(x => sh.getRange(MAIN_FIRST, x.getColumn(), n, x.getNumColumns()))).build()));
   if (sh.getFilter()) sh.getFilter().remove();
   sh.getRange(MAIN_HDR_ROW, 1, lastRow - MAIN_HDR_ROW + 1, W).createFilter();
-  return `блоков: ${blocks.length}, товаров: ${all.length}`;
+  const g = Object.keys(plan.guessed);
+  if (g.length) log_('Категории', 'INFO', `угадана категория: ${g.length} — ` + g.map(a => `${a} → ${plan.guessed[a]}`).join(', '));
+  return `блоков: ${blocks.length}, товаров: ${all.length}` + (g.length ? `, категория угадана: ${g.length} (список — в «Логе»)` : '');
+}
+
+/**
+ * Ночью, в «Обновить всё»: перекладывает товары, которые стоят не в своём блоке, — новые, провисевшие
+ * NEW_PRODUCTS_DAYS, уходят в свою категорию; товарам без категории она угадывается; ручная правка категории применяется.
+ * Лист перестраивается, только если есть что переложить.
+ */
+function settleBlocks_() {
+  const m = readMain_(), at = mainBlockOf_(m), since = newSince_(Date.now());
+  const homeless = m.rows.filter(r => !catOf_(r));
+  if (homeless.length) {
+    guessCategories_(homeless, m.rows);
+    const patch = {};
+    homeless.forEach(r => { patch[r._row] = r['Категория']; });
+    mainPatch_(m, 'Категория', patch);
+  }
+  const moves = m.rows.map(r => ({ r, to: isNewRow_(r, since) ? NEW_BLOCK : catOf_(r) })).filter(x => at[x.r._row] !== x.to);
+  if (!moves.length) return 'все товары на своих местах';
+  regroup_([]);
+  return `переложено: ${moves.length} — ` + moves.slice(0, 20).map(x => `${x.r['Артикул']} → ${x.to}`).join(', ') +
+    (moves.length > 20 ? ', …' : '');
+}
+
+/** Обновление структуры: товары, загруженные кнопкой до появления колонки «Добавлен» (в «Результате» 🆕),
+ *  остаются в «🆕 Новых товарах» ещё на NEW_PRODUCTS_DAYS — отсчёт с этого момента */
+function seedNewDates_(m) {
+  if (m.h.indexOf('Добавлен') < 0) return 0;
+  const at = mainBlockOf_(m), now = new Date(), patch = {};
+  m.rows.forEach(r => {
+    if (at[r._row] === NEW_BLOCK && !isDate_(r['Добавлен']) && String(r['Результат'] || '').startsWith('🆕')) patch[r._row] = now;
+  });
+  if (Object.keys(patch).length) mainPatch_(m, 'Добавлен', patch);
+  return Object.keys(patch).length;
 }
 
 /* ---------- Добавить товары, которых нет в таблице — одна кнопка ---------- */
@@ -369,10 +485,11 @@ function addMissingProducts_() {
     });
     mainPatch_(m, 'Product ID', pid); mainPatch_(m, 'SKU', sku); mainPatch_(m, 'Результат', res);
   }
+  const now = new Date();                                   // по этой дате товар сутки стоит наверху, в «🆕 Новых товарах»
   const extra = fresh.map(x => {
     const it = info[x.product_id] || {};
     return { 'Артикул': String(x.offer_id), 'Product ID': x.product_id, 'Название': it.name || '',
-      'SKU': skuOf(it), 'Категория': '', 'Отправить': false };
+      'SKU': skuOf(it), 'Категория': '', 'Отправить': false, 'Добавлен': now };
   });
   if (extra.length) regroup_(extra);
   syncTariffs_(); syncStocks_(); importCosts_();
@@ -388,7 +505,8 @@ function addMissingProducts_() {
     else res[r._row] = '🆕 нет закупа: укажите «Код в прайсе» и «Источник закупа»';
   });
   mainPatch_(m2, 'Цена продажи, ₽', price); mainPatch_(m2, 'Отправить', send); mainPatch_(m2, 'Результат', res);
-  return `добавлено: ${fresh.length}, цена назначена: ${Object.keys(price).length}, без закупа: ${fresh.length - Object.keys(price).length}` +
+  return `добавлено: ${fresh.length} (наверху листа, в «${NEW_BLOCK}»), цена назначена: ${Object.keys(price).length}, ` +
+    `без закупа: ${fresh.length - Object.keys(price).length}` +
     (revive.length ? `, снова в продаже (вернули Product ID): ${revive.length} — ${revive.slice(0, 10).map(x => x.offer_id).join(', ')}` : '');
 }
 
@@ -1934,6 +2052,7 @@ function syncAll() {
     SpreadsheetApp.flush();
     step('Аудит', runAudit_);
     step('Демпинг', dumpingReport_);
+    step('Раскладка по категориям', settleBlocks_);   // в конце: перестройка листа долгая, остальное уже обновлено
     return out.join(' | ');
   });
 }
@@ -2419,7 +2538,7 @@ var MAIN_COLS = ['Артикул', 'SKU', 'Product ID', 'Код в прайсе'
   'Цена продажи, ₽', 'Цена вручную', 'Цена на Ozon, ₽', 'Мин. цена в акциях, ₽', 'В акции', 'Цена факт., ₽', 'Прибыль, ₽', 'Маржа, %',
   'ROI, %', 'Статус', 'Прибыль факт/шт, ₽', 'Маржа факт, %', 'Конкурент Ozon, ₽', 'Другие площадки, ₽',
   'Разница с Ozon', 'Позиция на Ozon', 'Отправить', 'Цена к отправке, ₽', 'Зачёркнутая, ₽', 'min_price, ₽', 'Результат',
-  'Логистика: основа', 'Правило закупа', 'Закуп вручную'];   // в конце, чтобы не сдвигать AN/AO
+  'Логистика: основа', 'Правило закупа', 'Закуп вручную', 'Добавлен'];   // в конце, чтобы не сдвигать AN/AO
 
 var SETTINGS_DEFAULTS = [
   ['MIN_MARGIN', 0.10, 'Минимальная маржа: «Мин. цена», min_price в Ozon и стартовая цена новых товаров.'],
@@ -2455,12 +2574,13 @@ var SETTINGS_DEFAULTS = [
   ['AUDIT_MAX_ZERO', 10, 'Максимум обнулений остатка за один запуск аудита.'],
   ['AUDIT_MAX_REMOVE', 50, 'Максимум снятий с акций за один запуск аудита.'],
   ['DUMPING_GAP', 0.2, 'Лист «Демпинг»: конкурент дешевле нас больше чем на эту долю — показываем.'],
-  ['STOCKS_REFRESH_MIN', 5, 'Как часто автоматически обновлять остатки, минут. Допустимо: 1, 5, 10, 15, 30.']
+  ['STOCKS_REFRESH_MIN', 5, 'Как часто автоматически обновлять остатки, минут. Допустимо: 1, 5, 10, 15, 30.'],
+  ['NEW_PRODUCTS_DAYS', 1, 'Сколько дней загруженные кнопкой товары стоят наверху листа Ozon в «🆕 Новых товарах». Потом ночное обновление перекладывает их в категорию из колонки «Категория». 0 — сразу в категорию.']
 ];
 // ключи, которые скрипт больше не читает: «Обновить структуру таблицы» убирает их из «Настроек»
 var SETTINGS_OBSOLETE = ['ALLOW_BELOW_MIN', 'OLD_TABLE_ID'];
 
-var MAIN_WIDTHS = { 'Логистика: основа': 90, 'Правило закупа': 90, 'Закуп вручную': 80,'В акции': 60, 'Артикул': 150, 'Название': 300, 'Категория': 110, 'Поставщик': 100, 'Источник закупа': 120,
+var MAIN_WIDTHS = { 'Логистика: основа': 90, 'Правило закупа': 90, 'Закуп вручную': 80, 'Добавлен': 110,'В акции': 60, 'Артикул': 150, 'Название': 300, 'Категория': 110, 'Поставщик': 100, 'Источник закупа': 120,
   'Статус': 105, 'Позиция на Ozon': 110, 'Выкуп: основа': 110, 'Результат': 210 };
 var MAIN_PCT = ['Комиссия, %', 'Выкуп, %', 'Эквайринг, %', 'Маржа, %', 'ROI, %', 'Маржа факт, %', 'Разница с Ozon'];
 var MAIN_MONEY = ['Закуп, ₽', 'РРЦ, ₽', 'Логистика, ₽', 'Обработка Ozon, ₽', 'Посл. миля, ₽', 'Возврат, ₽',
@@ -2608,6 +2728,7 @@ function applyMainSchema_() {
   // 2. формулы: в первую товарную строку, дальше regroup_ разносит по всем
   const m = readMain_();
   if (!m.rows.length) return 'структура обновлена, товаров пока нет';
+  seedNewDates_(m);
   const first = m.rows[0]._row;
   const F = mainFormulas_(h, first);
   Object.keys(F).forEach(n => sh.getRange(first, h.indexOf(n) + 1).setFormula(fx_(F[n])));
@@ -2652,6 +2773,7 @@ function styleMain_(sh, h, W) {
   MAIN_PCT.forEach(n => colRange(n).setNumberFormat('0.0%'));
   MAIN_MONEY.forEach(n => colRange(n).setNumberFormat('#,##0'));
   colRange('Остаток FBS').setNumberFormat('#,##0');
+  if (h.indexOf('Добавлен') >= 0) colRange('Добавлен').setNumberFormat('dd.MM.yyyy HH:mm');
   ['Название', 'Категория', 'Поставщик', 'Источник закупа', 'Артикул', 'Результат', 'Статус', 'Позиция на Ozon']
     .forEach(n => colRange(n).setHorizontalAlignment('left'));
   paintColumns_(sh, h);
@@ -2720,6 +2842,8 @@ function styleBlocks_(sh, W) {
       .setBackground(OZ_UI.block).setFontColor(OZ_UI.blockText).setFontWeight('bold').setFontSize(11)
       .setBorder(true, null, true, null, null, null, '#5B7DA6', SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
   });
+  const nb = rows.find(r => String(col[r - MAIN_FIRST][0]).replace(/^▌\s*/, '').trim() === NEW_BLOCK);
+  if (nb) sh.getRange(nb, 1, 1, W).setBackground(OZ_UI.good).setFontColor(OZ_UI.goodText);
 }
 
 /** Прячет или показывает служебные колонки */
