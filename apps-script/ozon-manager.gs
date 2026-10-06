@@ -196,6 +196,8 @@ function num_(v) {
   return isFinite(n) ? n : '';
 }
 function key_(v) { return String(v === null || v === undefined ? '' : v).trim().replace(/\.0+$/, '').toLowerCase(); }
+/** Строка без Product ID — товар временно отключён: скрипт его не считает, не отправляет в Ozon и не проверяет */
+function isOff_(r) { return !(Number(r['Product ID']) > 0); }
 function date_(v) { if (!v) return ''; const d = new Date(v); return isNaN(d) ? '' : d; }
 function toast_(msg, sec) { try { SpreadsheetApp.getActive().toast(msg, 'Ozon', sec || 5); } catch (e) {} }
 
@@ -662,7 +664,9 @@ function importCosts_() {
 
   // 3. закуп по правилу каждого товара
   const m = readMain_(), cost = {}, rrc = {}, miss = [], notInPrice = [], recs = [], history = [], used1c = [];
+  let off = 0;
   m.rows.forEach(r => {
+    if (isOff_(r)) { off++; return; }          // временно отключённые: закуп не трогаем и о них не шумим
     const src = String(r['Источник закупа'] || '').trim();
     if (src.toLowerCase() === 'вручную') return;
     const code = key_(r['Код в прайсе']), pid = key_(r['Product ID']);
@@ -717,6 +721,7 @@ function importCosts_() {
   if (notInPrice.length) log_('Закуп', 'WARN', `Кода нет в своём прайсе, взят только закуп из 1С (${notInPrice.length}) — проверьте «Код в прайсе» и «Источник закупа»: ${notInPrice.join(', ')}`);
   if (miss.length) log_('Закуп', 'WARN', `Нет закупа (${miss.length}): ${miss.join(', ')}`);
   return `обновлено: ${Object.keys(cost).length - miss.length}, без закупа: ${miss.length}, изменилось: ${history.length}` +
+    (off ? `, отключённых пропущено: ${off}` : '') +
     ` | на проверку: ${toCheck}${srcChecks.length ? `, проблемных источников: ${srcChecks.length}` : ''} — лист «${COST_CHECK_SHEET}»` +
     (noAccess.length ? ` | нет доступа к ${noAccess.length} табл. — ссылки в «Логе»` : '');
 }
@@ -1568,6 +1573,7 @@ function setPricesToMargin_(cfgKey, sourceCol) {
   const patch = {}, res = {};
   let manual = 0, skipped = 0;
   m.rows.forEach(r => {
+    if (isOff_(r)) return;
     if (hasManual && r['Цена вручную'] === true) { manual++; return; }
     let target = Number(r[sourceCol]);
     if (!(target > 0)) target = priceForMargin_(r, tariff[key_(r['Product ID'])], margin, acq, pack, defBuyout, logMode);
@@ -1623,7 +1629,10 @@ function uploadPrices_(mode) {
     : mode === 'manual' ? r['Цена вручную'] === true
     : r['Отправить'] === true;
 
+  let offSkipped = 0;
   m.rows.filter(pick).forEach(r => {
+    // у отключённого товара цена может остаться в строке, но в Ozon она уходить не должна
+    if (isOff_(r)) { res[r._row] = '⏸ товар отключён (нет Product ID) — не отправляем'; offSkipped++; return; }
     const p = {
       price: Math.round(Number(r['Цена к отправке, ₽'])),
       old: Math.round(Number(r['Зачёркнутая, ₽']) || 0),
@@ -1661,8 +1670,9 @@ function uploadPrices_(mode) {
 
   const errs = Object.keys(res).filter(k => res[k].charAt(0) === '✗').length;
   const what = mode === 'all' ? 'все цены' : mode === 'manual' ? 'ручные цены' : 'отмеченные цены';
-  return `${dry ? '[ПРОВЕРКА, в Ozon ничего не ушло] ' : ''}${what}: взято ${Object.keys(res).length}, ` +
-         `отправлено ${Object.keys(off).length}, отклонено ${errs}. Причины отказов — в колонке «Результат»`;
+  return `${dry ? '[ПРОВЕРКА, в Ozon ничего не ушло] ' : ''}${what}: взято ${Object.keys(res).length - offSkipped}, ` +
+         `отправлено ${Object.keys(off).length}, отклонено ${errs}` + (offSkipped ? `, отключённых пропущено: ${offSkipped}` : '') +
+         '. Причины отказов — в колонке «Результат»';
 }
 
 /** Проверки перед отправкой: возвращает текст ошибки или ''. Ниже мин. цены (MIN_MARGIN) — никогда. */
@@ -2394,7 +2404,7 @@ function mainFormulas_(h, r) {
   // ROI: сколько прибыли приносит каждый рубль, вложенный в закуп
   F['ROI, %'] = `=IF(OR(${c('Прибыль, ₽')}="",N(${c('Закуп, ₽')})<=0),"",${c('Прибыль, ₽')}/${c('Закуп, ₽')})`;
   // допуск 0,2 п.п.: цена округляется до рубля, и маржа может выйти 11,996% вместо 12%
-  F['Статус'] = `=IF(NOT(ISNUMBER(${c('Закуп, ₽')})),"❔ нет закупа",IF(${c('Маржа, %')}="","❔ нет цены",IF(${c('Прибыль, ₽')}<0,"⛔ убыток",IF(${c('Маржа, %')}<${cfgRef_('MIN_MARGIN')}-2/1000,"⚠ ниже мин.","✓ норма"))))`;
+  F['Статус'] = `=IF(${pidRef}="","⏸ отключён",IF(NOT(ISNUMBER(${c('Закуп, ₽')})),"❔ нет закупа",IF(${c('Маржа, %')}="","❔ нет цены",IF(${c('Прибыль, ₽')}<0,"⛔ убыток",IF(${c('Маржа, %')}<${cfgRef_('MIN_MARGIN')}-2/1000,"⚠ ниже мин.","✓ норма")))))`;
   F['Прибыль факт/шт, ₽'] = `=IFERROR(IF(${pf('Прибыль факт/шт, ₽')}="","",${pf('Прибыль факт/шт, ₽')}),"")`;
   F['Маржа факт, %'] = `=IFERROR(IF(${pf('Маржа факт, %')}="","",${pf('Маржа факт, %')}),"")`;
   F['Конкурент Ozon, ₽'] = `=IFERROR(IF(N(${t('Мин. цена конкурента на Ozon')})=0,"",${t('Мин. цена конкурента на Ozon')}),"")`;
@@ -2549,6 +2559,7 @@ function styleMain_(sh, h, W) {
     rule(fx_(`=LEFT(${stL},1)="⚠"`), st, OZ_UI.warn, OZ_UI.warnText, true),
     rule(fx_(`=LEFT(${stL},1)="✓"`), st, OZ_UI.good, OZ_UI.goodText),
     rule(fx_(`=LEFT(${stL},1)="❔"`), st, null, OZ_UI.muted),
+    rule(fx_(`=LEFT(${stL},1)="⏸"`), st, null, OZ_UI.muted),
     rule(fx_(`=LEFT(${posL},1)="▲"`), [colRange('Позиция на Ozon')], null, OZ_UI.badText),
     rule(fx_(`=LEFT(${posL},1)="✓"`), [colRange('Позиция на Ozon')], null, OZ_UI.goodText),
     // товары без остатка — вся строка серая
@@ -2828,6 +2839,7 @@ function runAudit_() {
   const m = readMain_(), rows = [], toRemove = {}, toZero = [];
   const prevStock = auditPrevStock_();
   m.rows.forEach(r => {
+    if (isOff_(r)) return;                     // временно отключённые товары не проверяем
     const pid = key_(r['Product ID']), L = live[pid];
     const cost = Number(r['Закуп, ₽']) || 0;
     const buy = Number(r['Выкуп, %']) || defBuyout;

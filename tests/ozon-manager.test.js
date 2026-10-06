@@ -248,7 +248,7 @@ test('распределение не выкидывает ручное реше
 test('цена ниже мин. цены не уходит, даже если в «Настройках» осталось ALLOW_BELOW_MIN = TRUE', () => {
   const { ctx } = load({ settings: { ALLOW_BELOW_MIN: true, MAX_PRICE_CHANGE: 0.3 } });
   const res = {};
-  const item = (row, art, price) => ({ _row: row, 'Артикул': art, 'Отправить': true, 'Цена к отправке, ₽': price,
+  const item = (row, art, price) => ({ _row: row, 'Артикул': art, 'Product ID': row, 'Отправить': true, 'Цена к отправке, ₽': price,
     'Зачёркнутая, ₽': 0, 'min_price, ₽': 100, 'Цена на Ozon, ₽': 95 });
   ctx.readMain_ = () => ({ h: ['Артикул', 'Отправить', 'Результат'], rows: [item(3, 'low', 90), item(4, 'ok', 100)] });
   ctx.mainPatch_ = (m, name, patch) => { if (name === 'Результат') Object.assign(res, patch); };
@@ -634,4 +634,45 @@ test('лист проверки: «Принято» прячет строку, �
   const out = sh.rows.slice(1).filter(r => r[0]).map(r => [r[0], r[C.indexOf('Закуп был, ₽')], r[C.indexOf('Что проверить')], r[C.indexOf('Принято')]]);
   assert.deepEqual(out, [['b', 500, 'закуп изменился на 60%', false], ['c', 1000, 'прайс и 1С расходятся на 67%', false],
     ['a', 1000, 'прайс и 1С расходятся на 43%', true]]);
+});
+
+/* ---------- Временно отключённые товары (строки без Product ID) ---------- */
+test('отключённые: закуп их не трогает, в «Нет закупа» и на проверку не попадают', () => {
+  const rows = [prod(3, 'a', 1), prod(4, 'off', ''), prod(5, 'off2', null, { 'Закуп, ₽': 500 })];
+  const r = runCosts({ price: { a: 100 }, c1: { 1: 100 }, rows });
+  assert.deepEqual(r.cost, { 3: 100 }, 'строки отключённых не переписываются');
+  assert.deepEqual(plain(r.recs.map(x => x.r['Артикул'])), ['a']);
+  assert.ok(!r.env.logs.some(l => /Нет закупа/.test(l)), r.env.logs.join('\n'));
+  assert.match(r.msg, /отключённых пропущено: 2/);
+});
+
+test('отключённые: цена не уходит в Ozon, даже если она осталась в строке', () => {
+  const { ctx } = load({ settings: { MAX_PRICE_CHANGE: 0.3 } });
+  const res = {};
+  const item = (row, art, pid) => ({ _row: row, 'Артикул': art, 'Product ID': pid, 'Цена к отправке, ₽': 100,
+    'Зачёркнутая, ₽': 0, 'min_price, ₽': 90, 'Цена на Ozon, ₽': 95 });
+  ctx.readMain_ = () => ({ h: ['Артикул', 'Результат'], rows: [item(3, 'on', 11), item(4, 'off', '')] });
+  ctx.mainPatch_ = (m, name, patch) => { if (name === 'Результат') Object.assign(res, patch); };
+  const msg = ctx.uploadPrices_('all');
+  assert.match(res[3], /^ПРОВЕРКА: уйдёт 100 /);
+  assert.match(res[4], /^⏸ товар отключён/);
+  assert.match(msg, /взято 1, .*отключённых пропущено: 1/);
+});
+
+test('отключённые: аудит их не проверяет, статус на листе — «⏸ отключён»', () => {
+  const env = load({ settings: { DRY_RUN: true, AUDIT_TOLERANCE: 0.02, DEFAULT_BUYOUT: 1 } });
+  const { ctx } = env;
+  ctx.readMain_ = () => ({ rows: [{ 'Product ID': '', 'Артикул': 'off', 'Закуп, ₽': 68 }] });
+  ctx.ensureAuditSheet_ = () => {};
+  ctx.auditPrevStock_ = () => ({});
+  let written = null;
+  ctx.writeTable_ = (name, rows) => { written = rows; };
+  ctx.ozonAll_ = () => [];
+  ctx.listActions_ = () => [];
+  ctx.runAudit_();
+  assert.deepEqual(plain(written || []), [], 'строки «❔ нет в ответе Ozon» для отключённых больше нет');
+  const cols = vm.runInContext('MAIN_COLS', ctx);
+  const F = ctx.mainFormulas_(cols, 3);
+  const pid = '$' + ctx.letter_(cols.indexOf('Product ID') + 1) + '3';
+  assert.ok(F['Статус'].startsWith(`=IF(${pid}="","⏸ отключён",`), F['Статус']);
 });
