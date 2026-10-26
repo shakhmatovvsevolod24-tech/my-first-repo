@@ -127,14 +127,13 @@ test('качество карточек: невыполненные услови
   assert.equal(r.attrs, 'минимум 2 из: Гарантия, Интерфейс');
 });
 
-test('товары: список, тип Ozon, остаток FBS и заказы без отменённых', () => {
+test('товары: список, тип Ozon, остаток FBS и заказы из аналитики', () => {
   const { ctx, sheets } = load({ fetch: ozonFetch({
     '/v3/product/list': b => ({ result: { items: b.last_id ? [] : [{ product_id: 1, offer_id: 'A-1' }, { product_id: 2, offer_id: 'B-2' }, { product_id: 3, offer_id: 'OLD', archived: true }], last_id: 'x' } }),
     '/v3/product/info/list': () => ({ items: [{ id: 1, name: 'Весы', sku: 111, type_id: 70 }, { id: 2, name: 'Сканер', sources: [{ sku: 222 }], type_id: 80 }] }),
     '/v4/product/info/stocks': b => ({ items: b.cursor ? [] : [{ product_id: 1, stocks: [{ type: 'fbs', present: 5, reserved: 1 }, { type: 'fbo', present: 9 }] }], cursor: 'c' }),
     '/v1/description-category/tree': () => ({ result: [{ category_name: 'Торговое оборудование', children: [{ type_id: 70, type_name: 'Весы торговые' }, { type_id: 80, type_name: 'Сканер штрихкода' }] }] }),
-    '/v3/posting/fbs/list': () => ({ result: { has_next: false, postings: [
-      { status: 'delivered', products: [{ offer_id: 'B-2', quantity: 2 }] }, { status: 'cancelled', products: [{ offer_id: 'A-1', quantity: 7 }] }] } })
+    '/v1/analytics/data': b => { assert.deepEqual(b.metrics, ['ordered_units']); return { result: { data: [{ dimensions: [{ id: '222' }], metrics: [2] }] } }; }
   }) });
   ctx.ensureSettings_();
   ctx.refreshProducts_();
@@ -145,4 +144,16 @@ test('товары: список, тип Ozon, остаток FBS и заказ�
     ['A-1', 111, 1, 'Весы', 'Весы торговые', 4, 0]]);
   const p = plain(ctx.readProducts_());
   assert.equal(p[1]['Остаток FBS'], 4);
+});
+
+test('товары: сбой заказов не мешает собрать лист', () => {
+  const { ctx, sheets } = load({ fetch: ozonFetch({
+    '/v3/product/list': b => ({ result: { items: b.last_id ? [] : [{ product_id: 1, offer_id: 'A-1' }], last_id: 'x' } }),
+    '/v3/product/info/list': () => ({ items: [{ id: 1, name: 'Весы', sku: 111, type_id: 70 }] }),
+    '/v4/product/info/stocks': () => ({ items: [] }),
+    '/v1/description-category/tree': () => ({ result: [] })
+  }) });
+  ctx.ensureSettings_();
+  assert.match(ctx.refreshProducts_(), /не получены/);
+  assert.deepEqual(sheets['Товары'].rows[1].slice(0, 7), ['A-1', 111, 1, 'Весы', '', 0, '']);
 });

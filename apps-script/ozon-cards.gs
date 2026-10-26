@@ -203,17 +203,11 @@ function typeNames_() {
   catch (e) { log_('Товары', 'WARN', 'типы товаров не получены, категория останется пустой: ' + e.message); }
   return out;
 }
-/** Заказанные штуки по артикулу за days дней (отменённые не считаем) */
-function ordersByOffer_(days) {
-  const to = new Date(), from = new Date(to.getTime() - days * 864e5), qty = {};
-  for (let offset = 0; offset < 200000; offset += 1000) {
-    const r = ozon_('/v3/posting/fbs/list', { dir: 'ASC', filter: { since: from.toISOString(), to: to.toISOString() }, limit: 1000, offset });
-    const part = (r.result && r.result.postings) || [];
-    part.forEach(p => { if (p.status === 'cancelled') return;
-      (p.products || []).forEach(pr => qty[key_(pr.offer_id)] = (qty[key_(pr.offer_id)] || 0) + (Number(pr.quantity) || 0)); });
-    if (!r.result || !r.result.has_next || !part.length) break;
-  }
-  return qty;
+/** Заказанные штуки по SKU за days дней — из аналитики Ozon (старый список отправлений Ozon отключил) */
+function ordersBySku_(days) {
+  const p = funnelPeriods_(days), out = {}, data = analyticsBySku_(p.cur[0], p.cur[1], ['ordered_units']);
+  Object.keys(data).forEach(sku => out[sku] = data[sku].ordered_units);
+  return out;
 }
 
 function refreshProducts_() {
@@ -227,16 +221,20 @@ function refreshProducts_() {
     .forEach(it => (it.stocks || []).filter(s => s.type === 'fbs')
       .forEach(s => stock[key_(it.product_id)] = (stock[key_(it.product_id)] || 0) + (Number(s.present) || 0) - (Number(s.reserved) || 0)));
   const types = typeNames_();
-  const days = Number(cfg_('ORDERS_DAYS', 60)), orders = ordersByOffer_(days);
+  // без заказов лист всё равно нужен остальным отчётам: сбой здесь не останавливает обновление
+  const days = Number(cfg_('ORDERS_DAYS', 60));
+  let orders = null;
+  try { orders = ordersBySku_(days); }
+  catch (e) { log_('Товары', 'WARN', 'заказы не получены, колонка «Заказы 60 дн» пустая: ' + e.message); }
   const now = new Date();
   const rows = list.map(x => {
     const it = info[key_(x.product_id)] || {};
     const sku = it.sku || (it.sources && it.sources[0] && it.sources[0].sku) || '';
     return [String(x.offer_id), sku, x.product_id, it.name || '', types[key_(it.type_id)] || '',
-      stock[key_(x.product_id)] || 0, orders[key_(x.offer_id)] || 0, now];
-  }).sort((a, b) => b[6] - a[6] || b[5] - a[5]);
+      stock[key_(x.product_id)] || 0, orders ? orders[key_(sku)] || 0 : '', now];
+  }).sort((a, b) => (Number(b[6]) || 0) - (Number(a[6]) || 0) || b[5] - a[5]);
   writeReport_(SHEETS.PRODUCTS, PRODUCT_COLS, rows, sh => sh.getRange(2, 8, rows.length, 1).setNumberFormat('dd.MM.yyyy HH:mm'));
-  return `товаров: ${rows.length}, с остатком: ${rows.filter(r => r[5] > 0).length}, с заказами за ${days} дн.: ${rows.filter(r => r[6] > 0).length}`;
+  return `товаров: ${rows.length}, с остатком: ${rows.filter(r => r[5] > 0).length}, с заказами за ${days} дн.: ${orders ? rows.filter(r => r[6] > 0).length : 'не получены, см. «Лог»'}`;
 }
 
 /** Товары с листа «Товары» как объекты по заголовкам */
@@ -294,11 +292,12 @@ function funnelPeriods_(days, now) {
 }
 
 /** Аналитика Ozon по SKU за период: {sku: {метрика: число}}. Ozon ограничивает частоту — при отказе ждём минуту */
-function analyticsBySku_(from, to) {
+function analyticsBySku_(from, to, metrics) {
+  metrics = metrics || FUNNEL_METRICS;
   const out = {};
   for (let offset = 0; offset < 100000; offset += 1000) {
-    const body = { date_from: from, date_to: to, metrics: FUNNEL_METRICS, dimension: ['sku'], filters: [],
-      sort: [{ key: 'hits_view_search', order: 'DESC' }], limit: 1000, offset };
+    const body = { date_from: from, date_to: to, metrics, dimension: ['sku'], filters: [],
+      sort: [{ key: metrics[0], order: 'DESC' }], limit: 1000, offset };
     let r;
     for (let attempt = 1; ; attempt++) {
       try { r = ozon_('/v1/analytics/data', body); break; }
@@ -312,7 +311,7 @@ function analyticsBySku_(from, to) {
     data.forEach(d => {
       const sku = key_(d.dimensions && d.dimensions[0] && d.dimensions[0].id);
       if (!sku) return;
-      const m = {}; FUNNEL_METRICS.forEach((k, i) => m[k] = Number((d.metrics || [])[i]) || 0);
+      const m = {}; metrics.forEach((k, i) => m[k] = Number((d.metrics || [])[i]) || 0);
       out[sku] = m;
     });
     if (data.length < 1000) break;
