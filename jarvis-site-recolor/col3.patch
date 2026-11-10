@@ -1,0 +1,59 @@
+diff --git a/team/site/v3a/assets/col.css b/team/site/v3a/assets/col.css
+index c82d674..22ef80c 100644
+--- a/team/site/v3a/assets/col.css
++++ b/team/site/v3a/assets/col.css
+@@ -15,3 +15,30 @@
+ [data-col="2"] .ga{background:#111b2e!important;color:#eaf1fb!important}
+ [data-col="2"] .mlist>li,[data-col="2"] .fc-m{background:linear-gradient(160deg,#16253d,#111c2f)}
+ [data-col="2"] [data-sport="football"] .mlist>li,[data-col="2"] body.football .mlist>li{background:linear-gradient(160deg,#13281f,#102019)}
++
++/* ── вариант 3: «роли цветов» (?col=3). Жёлтый — только действие (кнопки в Telegram); синий — всё, что говорит модель;
++   серый — линия букмекера и второстепенный текст; зелёный/красный — только исходы (зашло / не зашло). Вёрстка не меняется. ── */
++/* жёлтый убран с цифр и индикаторов: кэф, время, счётчики — белым, чтобы не спорили с кнопкой */
++[data-col="3"] .bet .k,[data-col="3"] .face .vs time,[data-col="3"] .h2 .hk,[data-col="3"] .sub li b,[data-col="3"] .tab[aria-selected="true"] .c,[data-col="3"] .ticker time{color:#f3f6fb}
++[data-col="3"] .ticker .k{color:#9fb0cc}
++[data-col="3"] .ticker li::after,[data-col="3"] .lamp,[data-col="3"] .board-top .lamp{background:#5b6f92}
++[data-col="3"] .pager button[aria-pressed="true"]{background:#f3f6fb}
++/* тёмные плашки — в синеву первого экрана вместо нейтрально-чёрного */
++[data-col="3"] .ticker{background:#0b1424}
++[data-col="3"] .bet{background:#13213d;box-shadow:none}
++[data-col="3"] .hero .board .bet{box-shadow:none}
++/* расчёт модели — синий, а не зелёный/жёлтый: зелёный оставлен исходам */
++[data-col="3"] .lv-hi,[data-col="3"] .lv-mid{--lv:#7ea8ff}
++[data-col="3"] .lv-lo{--lv:#9fb0cc}
++[data-col="3"] .bet .pm em{background:#22304d}
++[data-col="3"] .bet .bl{color:#9fb0cc}
++/* карточки матчей: один вид для КХЛ и НХЛ, лигу показывает логотип; выбранный исход — один синий, без красной черты */
++[data-col="3"] .match.khl,[data-col="3"] .match.nhl{background:#f1f6fb;box-shadow:none}
++[data-col="3"] .match.khl:hover,[data-col="3"] .match.nhl:hover{background:#fff;box-shadow:0 14px 28px -20px var(--shadow)}
++[data-col="3"] .qc{border-color:#c6d3e3}
++[data-col="3"] .qc.fav{background:#173daf;border-color:#173daf;box-shadow:none}
++/* расхождение модели с линией — синий и серый: «ниже линии» не значит «плохо» */
++[data-col="3"] .dv .up{color:#173daf}
++[data-col="3"] .dv .dn{color:#3b4552}
++/* мелкий серый текст на светлом — темнее */
++[data-col="3"] .sec{--ink-3:#414d5c}
+diff --git a/team/site/v3a/assets/palettes.js b/team/site/v3a/assets/palettes.js
+index b6f4cb7..6c104b7 100644
+--- a/team/site/v3a/assets/palettes.js
++++ b/team/site/v3a/assets/palettes.js
+@@ -4,16 +4,16 @@
+ (function(){
+   var d=document.documentElement,K='jv-col',q='',c='';
+   try{q=new URLSearchParams(location.search).get('col')||''}catch(e){}
+-  try{if(q==='off')sessionStorage.removeItem(K);else if(q==='1'||q==='2')sessionStorage.setItem(K,q);c=sessionStorage.getItem(K)||''}catch(e){c=(q==='1'||q==='2')?q:''}
++  try{if(q==='off')sessionStorage.removeItem(K);else if(q==='1'||q==='2'||q==='3')sessionStorage.setItem(K,q);c=sessionStorage.getItem(K)||''}catch(e){c=(q==='1'||q==='2'||q==='3')?q:''}
+   if(q==='off')c='';
+-  if(c!=='1'&&c!=='2')return;
++  if(c!=='1'&&c!=='2'&&c!=='3')return;
+   d.dataset.col=c;
+   if(c==='2'){d.dataset.themeWas=d.dataset.theme||'';d.dataset.theme='a';var m=document.querySelector('meta[name=theme-color]');if(m)m.content='#0a1220'}
+   var s=document.currentScript,base=s.src.replace(/palettes\.js.*$/,'');
+   var css=document.createElement('link');css.rel='stylesheet';css.href=base+'col.css';document.head.appendChild(css);
+   document.addEventListener('DOMContentLoaded',function(){
+     var b=document.createElement('div');b.className='col-bar';b.setAttribute('role','group');b.setAttribute('aria-label','Вариант цветов');
+-    b.innerHTML=[['1','1 · Текущий'],['2','2 · Как главная'],['off','Было']].map(function(x){return '<button type="button" data-c="'+x[0]+'" aria-pressed="'+(x[0]===c)+'">'+x[1]+'</button>'}).join('');
++    b.innerHTML=[['1','1 · Текущий'],['2','2 · Как главная'],['3','3 · Роли цветов'],['off','Было']].map(function(x){return '<button type="button" data-c="'+x[0]+'" aria-pressed="'+(x[0]===c)+'">'+x[1]+'</button>'}).join('');
+     b.addEventListener('click',function(e){var k=e.target.getAttribute&&e.target.getAttribute('data-c');if(!k)return;var u=new URL(location.href);u.searchParams.set('col',k);location.href=u.toString()});
+     document.body.appendChild(b);
+   });
