@@ -1,0 +1,80 @@
+diff --git a/team/site/v3a/assets/col.css b/team/site/v3a/assets/col.css
+index c82d674..00b97f8 100644
+--- a/team/site/v3a/assets/col.css
++++ b/team/site/v3a/assets/col.css
+@@ -1,4 +1,5 @@
+-/* Варианты цветов всего сайта (?col=1|2, assets/palettes.js). Вёрстка не меняется — только цвета. */
++/* Пробные варианты цветов (?col=1|2) и прежний вид (?col=off), assets/palettes.js. Основной вид — «роли цветов» в конце v3a.css;
++   ?col=3 возвращает к нему. Вёрстка не меняется — только цвета. */
+ .col-bar{position:fixed;left:50%;bottom:76px;transform:translateX(-50%);z-index:90;display:flex;gap:4px;padding:4px;border-radius:999px;background:#10161f;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+ .col-bar button{border:0;border-radius:999px;padding:9px 13px;background:transparent;color:#cfd8e6;font:700 13px/1 var(--display);cursor:pointer;white-space:nowrap}
+ .col-bar button[aria-pressed="true"]{background:#ffc21a;color:#1a1400}
+diff --git a/team/site/v3a/assets/palettes.js b/team/site/v3a/assets/palettes.js
+index b6f4cb7..814953e 100644
+--- a/team/site/v3a/assets/palettes.js
++++ b/team/site/v3a/assets/palettes.js
+@@ -1,19 +1,19 @@
+-/* Два варианта цветов всего сайта (владелец 08.11): ?col=1 «текущий сайт, приведённый в порядок» (тёмный первый экран, дальше один
+-   светлый фон, без смены «арена → лёд → бумага»), ?col=2 «как новая главная» (весь сайт тёмно-синий, тема «a»); ?col=off — как было.
+-   Выбор помнится в sessionStorage. Плашка-переключатель внизу видна, пока вариант включён. */
++/* Цвета сайта. Основной вид — «роли цветов» (владелец 10.11), правила в конце v3a.css, работает без параметров.
++   ?col=off — прежний вид, ?col=1|2 — пробные варианты (assets/col.css), ?col=3 — вернуться к основному.
++   Выбор помнится в sessionStorage. Плашка-переключатель внизу видна, только пока включён не основной вид. */
+ (function(){
+-  var d=document.documentElement,K='jv-col',q='',c='';
++  var d=document.documentElement,K='jv-col',V=['1','2','off'],q='',c='';
+   try{q=new URLSearchParams(location.search).get('col')||''}catch(e){}
+-  try{if(q==='off')sessionStorage.removeItem(K);else if(q==='1'||q==='2')sessionStorage.setItem(K,q);c=sessionStorage.getItem(K)||''}catch(e){c=(q==='1'||q==='2')?q:''}
+-  if(q==='off')c='';
+-  if(c!=='1'&&c!=='2')return;
++  try{if(q==='3')sessionStorage.removeItem(K);else if(V.indexOf(q)>-1)sessionStorage.setItem(K,q);c=sessionStorage.getItem(K)||''}catch(e){c=V.indexOf(q)>-1?q:''}
++  if(q==='3')c='';
++  if(V.indexOf(c)<0)return;
+   d.dataset.col=c;
+   if(c==='2'){d.dataset.themeWas=d.dataset.theme||'';d.dataset.theme='a';var m=document.querySelector('meta[name=theme-color]');if(m)m.content='#0a1220'}
+   var s=document.currentScript,base=s.src.replace(/palettes\.js.*$/,'');
+   var css=document.createElement('link');css.rel='stylesheet';css.href=base+'col.css';document.head.appendChild(css);
+   document.addEventListener('DOMContentLoaded',function(){
+     var b=document.createElement('div');b.className='col-bar';b.setAttribute('role','group');b.setAttribute('aria-label','Вариант цветов');
+-    b.innerHTML=[['1','1 · Текущий'],['2','2 · Как главная'],['off','Было']].map(function(x){return '<button type="button" data-c="'+x[0]+'" aria-pressed="'+(x[0]===c)+'">'+x[1]+'</button>'}).join('');
++    b.innerHTML=[['3','Основной'],['1','1 · Текущий'],['2','2 · Как главная'],['off','Было']].map(function(x){return '<button type="button" data-c="'+x[0]+'" aria-pressed="'+(x[0]===c)+'">'+x[1]+'</button>'}).join('');
+     b.addEventListener('click',function(e){var k=e.target.getAttribute&&e.target.getAttribute('data-c');if(!k)return;var u=new URL(location.href);u.searchParams.set('col',k);location.href=u.toString()});
+     document.body.appendChild(b);
+   });
+diff --git a/team/site/v3a/assets/v3a.css b/team/site/v3a/assets/v3a.css
+index fc8a48a..20bf455 100644
+--- a/team/site/v3a/assets/v3a.css
++++ b/team/site/v3a/assets/v3a.css
+@@ -977,3 +977,32 @@ body{font-variant-numeric:tabular-nums lining-nums}
+ .h2t span:last-child{justify-content:flex-end;text-align:right}
+ @media (max-width:480px){.h2t{font-size:14px}.h2t b{font-size:22px}}
+ .l3 .op .nm{min-width:0;overflow:hidden;text-overflow:ellipsis}   /* длинное название — с многоточием, не впритык к счёту (аудит 09.11b) */
++
++/* ── Основные цвета, «роли цветов» (владелец 10.11; прежний вид — ?col=off, пробные варианты — ?col=1|2, assets/col.css). Жёлтый — только действие (кнопки в Telegram); цвет вида спорта (хоккей — синий, футбол — зелёный) — всё, что говорит модель;
++   серый — линия букмекера и второстепенный текст; зелёный/красный — только исходы (зашло / не зашло). Вёрстка не меняется. ── */
++/* жёлтый убран с цифр и индикаторов: кэф, время, счётчики — белым, чтобы не спорили с кнопкой */
++html[data-theme="arena"]:not([data-col]) .bet .k,html[data-theme="arena"]:not([data-col]) .face .vs time,html[data-theme="arena"]:not([data-col]) .h2 .hk,html[data-theme="arena"]:not([data-col]) .sub li b,html[data-theme="arena"]:not([data-col]) .tab[aria-selected="true"] .c,html[data-theme="arena"]:not([data-col]) .ticker time{color:#f3f6fb}
++html[data-theme="arena"]:not([data-col]) .ticker .k{color:#9fb0cc}
++html[data-theme="arena"]:not([data-col]) .ticker li::after,html[data-theme="arena"]:not([data-col]) .lamp,html[data-theme="arena"]:not([data-col]) .board-top .lamp{background:#5b6f92}
++html[data-theme="arena"]:not([data-col]) .pager button[aria-pressed="true"]{background:#f3f6fb}
++/* тёмные плашки — в синеву первого экрана вместо нейтрально-чёрного */
++html[data-theme="arena"]:not([data-col]) .ticker{background:#0b1424}
++html[data-theme="arena"]:not([data-col]) .bet{background:#13213d;box-shadow:none}
++html[data-theme="arena"]:not([data-col]) .hero .board .bet{box-shadow:none}
++/* расчёт модели — цветом вида спорта (хоккей — синий, футбол — зелёный газона), а не «светофором» уверенности */
++html[data-theme="arena"][data-sport="hockey"]:not([data-col]) .lv-hi,html[data-theme="arena"][data-sport="hockey"]:not([data-col]) .lv-mid{--lv:#7ea8ff}
++html[data-theme="arena"][data-sport="football"]:not([data-col]) .lv-hi,html[data-theme="arena"][data-sport="football"]:not([data-col]) .lv-mid{--lv:var(--sport)}
++html[data-theme="arena"]:not([data-col]) .lv-lo{--lv:#9fb0cc}
++html[data-theme="arena"]:not([data-col]) .bet .pm em{background:#22304d}
++html[data-theme="arena"]:not([data-col]) .bet .bl{color:#9fb0cc}
++/* карточки матчей: один вид для КХЛ и НХЛ, лигу показывает логотип; выбранный исход — один синий, без красной черты */
++html[data-theme="arena"]:not([data-col]) .match.khl,html[data-theme="arena"]:not([data-col]) .match.nhl{background:#f1f6fb;box-shadow:none}
++html[data-theme="arena"]:not([data-col]) .match.khl:hover,html[data-theme="arena"]:not([data-col]) .match.nhl:hover{background:#fff;box-shadow:0 14px 28px -20px var(--shadow)}
++html[data-theme="arena"]:not([data-col]) .qc{border-color:#c6d3e3}
++html[data-theme="arena"][data-sport="hockey"]:not([data-col]) .qc.fav{background:#173daf;border-color:#173daf;box-shadow:none}
++/* расхождение модели с линией — цвет вида спорта и серый: «ниже линии» не значит «плохо» */
++html[data-theme="arena"][data-sport="hockey"]:not([data-col]) .dv .up{color:#173daf}
++html[data-theme="arena"][data-sport="football"]:not([data-col]) .dv .up{color:var(--sport)}
++html[data-theme="arena"]:not([data-col]) .dv .dn{color:#3b4552}
++/* мелкий серый текст на светлом — темнее */
++html[data-theme="arena"]:not([data-col]) .sec{--ink-3:#414d5c}
