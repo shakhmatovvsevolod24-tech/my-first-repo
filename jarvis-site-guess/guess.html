@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ru" data-theme="a">
+<head>
+<meta charset="utf-8">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Угадайка: вы против модели | JARVIS</title>
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#0a1220">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Sans+Extra+Condensed:wght@500;600;700;800;900&family=Literata:opsz,wght@7..72,400;7..72,600&display=swap">
+<link rel="stylesheet" href="assets/v3a.css">
+<link rel="stylesheet" href="assets/nav.css">
+<link rel="stylesheet" href="assets/home.css">
+<link rel="stylesheet" href="assets/results.css">
+<link rel="stylesheet" href="assets/guess.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="site.webmanifest">
+<script src="assets/efir/efir-loader.js"></script>
+<script src="assets/palettes.js"></script>
+<meta name="description" content="Угадайка: выберите победителя матча КХЛ или НХЛ и сравните свой счёт с расчётом модели JARVIS. Без денег и кэфов.">
+<meta property="og:type" content="website"><meta property="og:site_name" content="JARVIS"><meta property="og:locale" content="ru_RU">
+<meta property="og:title" content="Угадайка: вы против модели | JARVIS"><meta property="og:description" content="Выберите победителя матча и сравните свой счёт с расчётом модели. Без денег и кэфов.">
+<meta property="og:image" content="assets/og/og-hockey.png"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+</head>
+<body>
+<a class="skip" href="#main">К содержанию</a>
+<header class="hd" id="hd">
+  <div class="wrap">
+    <a class="logo" href="index.html" aria-label="JARVIS, главная">JAR<i>V</i>IS</a>
+    <nav class="seg" aria-label="Вид спорта">
+      <a href="hockey/index.html">Хоккей</a>
+      <a href="football/index.html">Футбол</a>
+    </nav>
+    <nav class="nav" aria-label="Разделы"><a href="index.html#today">Сегодня</a><a href="model.html">Модель</a><a href="results.html">Итоги</a><a href="index.html#faq">Вопросы</a></nav>
+    <a class="btn btn-tg" href="https://t.me/jarvibet" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.6 3.2 2.9 10.4c-1.3.5-1.3 1.2-.2 1.6l4.8 1.5 1.8 5.6c.2.6.4.8.9.8.4 0 .6-.2.9-.5l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.7-.8l3.1-14.7c.3-1.3-.5-1.9-1.4-1.5ZM8.3 13.2l9.6-6c.5-.3.9-.1.5.2l-8.2 7.4-.3 3.4-1.6-5Z"/></svg><span>Получать прогнозы — бесплатно</span></a>
+  </div>
+</header>
+
+<main id="main">
+<section class="hm rs-top" aria-labelledby="gs-h">
+  <div class="wrap">
+    <p class="crumbs"><a href="index.html">Главная</a> › Угадайка</p>
+    <h1 id="gs-h">Угадайка: вы против модели</h1>
+    <p class="lead">Выберите победителя матча — потом покажем, на кого ставит расчёт. После игры сравним счёт. Без денег и кэфов.</p>
+    <ul class="rs-kpi gs-kpi" id="gs-kpi" aria-label="Счёт"></ul>
+    <p class="rs-form" id="gs-form"></p>
+    <noscript><p class="lead">Для угадайки нужен JavaScript.</p></noscript>
+  </div>
+</section>
+
+<section class="sec rsp gsp" id="play" aria-labelledby="gs-p-h">
+  <div class="wrap">
+    <h2 id="gs-p-h">Ближайшие матчи</h2>
+    <div id="gs-play" aria-live="polite"></div>
+  </div>
+</section>
+
+<section class="sec rsp gsp" id="mine" aria-labelledby="gs-m-h" hidden>
+  <div class="wrap">
+    <h2 id="gs-m-h">Сыгранные</h2>
+    <div id="gs-done"></div>
+    <button class="rs-more" id="gs-more" type="button" hidden>Показать ещё</button>
+  </div>
+</section>
+
+<section class="sec rsp gsp" id="rules" aria-labelledby="gs-r-h">
+  <div class="wrap">
+    <h2 id="gs-r-h">Правила</h2>
+    <ul class="rs-how">
+      <li><b>Победитель матча</b><span>С учётом овертайма и буллитов — ничьих в хоккее нет. Выбор можно менять до начала игры.</span></li>
+      <li><b>Модель выбирает так же</b><span>Её выбор — команда с большей вероятностью победы по расчёту. Показываем его только после вашего.</span></li>
+      <li><b>Счёт — по итогам матчей</b><span>Итог появляется после обновления данных сайта, обычно утром. Угадал — очко, вам и модели отдельно.</span></li>
+      <li><b>Всё хранится у вас</b><span>Выборы лежат только в этом браузере: мы их не получаем. На другом устройстве счёт начнётся заново.</span></li>
+    </ul>
+    <p class="rs-legal">18+. Это игра без денег и призов. Расчёт модели не гарантирует результат. Реклама букмекеров на сайте не размещается.</p>
+    <p class="gs-reset"><button type="button" id="gs-reset">Сбросить мой счёт</button></p>
+  </div>
+</section>
+
+<section class="sub" id="subscribe">
+  <div class="wrap">
+    <div><h2>Прогнозы до матча&nbsp;— в Telegram</h2>
+      <div class="cta"><a class="btn btn-tg" href="https://t.me/jarvibet" target="_blank" rel="noopener">Получать прогнозы — бесплатно</a></div></div>
+    <ul>
+      <li><b>До начала матча</b><span>Ставка, кэф и вероятность по модели.</span></li>
+      <li><b>Итоги каждое утро</b><span>Все прогнозы дня подряд.</span></li>
+      <li><b>Бесплатно</b><span>Без VIP и рекламы букмекеров.</span></li>
+    </ul>
+  </div>
+</section>
+</main>
+
+<script src="assets/nav.js"></script>
+<script src="assets/footer.js"></script>
+<script src="assets/data/teams-lite.js"></script>
+<script src="data/today.js"></script>
+<script src="data/model.js"></script>
+<script src="assets/guess.js"></script>
+</body>
+</html>
